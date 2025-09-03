@@ -1,0 +1,108 @@
+/* =========================================================
+   ZeroToken — Minimal & Stable Theme (Shadow DOM)
+   - Header wordmark: ZTblackbckgrn.png (küçük, taşma yok)
+   - CTA: lime (#c1ff72), solda zticontrans.png, ortada metin
+   - Logout etkilenmez
+   - Footer: Marsirius imzası
+   DİKKAT: URL'ler assets/ ÖN EKİ OLMADAN (dosya, theme.css ile aynı klasörde)
+   ========================================================= */
+
+:host{
+  --zt-bg:#000; --zt-text:#eaeef7; --zt-muted:#a6adbb; --zt-border:rgba(255,255,255,.08);
+  --zt-accent:#c1ff72; --zt-accent-hover:#a6ff3b; --zt-success:#22c55e;
+  --zt-radius:16px; --zt-shadow:0 8px 28px rgba(0,0,0,.40);
+  --zt-font:"MuseoModerno",ui-sans-serif,-apple-system,Segoe UI,Roboto,Inter,Arial,sans-serif;
+
+  --logo-w:118px;     /* 110–126 arası tweak edilebilir */
+  --logo-h:20px;
+  --cta-h:46px;       /* 44–48 arası tweak edilebilir */
+  --cta-icon-left:16px;
+}
+
+#zt-panel{
+  position:relative !important;
+  background:var(--zt-bg); color:var(--zt-text); font-family:var(--zt-font);
+  padding:12px !important; padding-top:40px !important;
+}
+
+/* Header/hero içindeki büyük görselleri tamamen sustur */
+#zt-panel .zt-header::before,
+#zt-panel header::before,
+#zt-panel [data-role="header"]::before{ content:none !important; width:0 !important; height:0 !important; background:none !important; }
+#zt-panel .zt-header img, #zt-panel header img{ display:none !important; }
+#zt-panel .zt-header, #zt-panel header, #zt-panel [data-role="header"]{
+  min-height:24px !important; margin:0 0 8px 0 !important; padding:0 !important;
+}
+#zt-panel .zt-header .zt-title, #zt-panel header h1, #zt-panel [data-role="title"]{
+  font-size:0 !important; line-height:0 !important; color:transparent !important;
+}
+
+/* Panel üst-sol sabit küçük wordmark (DOĞRU DOSYA: ZTblackbckgrn.png) */
+#zt-panel::before{
+  content:"" !important;
+  position:absolute !important; top:10px !important; left:12px !important;
+  width:var(--logo-w) !important; height:var(--logo-h) !important;
+  background:url("ZTblackbckgrn.png") no-repeat left center / contain !important;
+  pointer-events:none !important;
+  filter: drop-shadow(0 2px 6px rgba(0,0,0,.25)) !important;
+}
+
+/* Progress'e dokunmuyoruz */
+#zt-panel [role="progressbar"]{ border-radius:999px; height:8px; }
+
+/* ---------- SADECE CTA: data-zt="cta" ile işaretlenecek ---------- */
+#zt-panel button[data-zt="cta"]{
+  position:relative !important; display:flex !important; align-items:center !important; justify-content:center !important;
+  width:100% !important; min-height:var(--cta-h) !important;
+  padding:12px 16px 12px calc(var(--cta-icon-left) + 36px) !important;
+  border-radius:var(--zt-radius) !important; border:1px solid rgba(255,255,255,.10) !important;
+  background:var(--zt-accent) !important; color:#000 !important;
+  font-weight:800 !important; font-size:16px !important; letter-spacing:.2px !important;
+  box-shadow:0 6px 20px rgba(193,255,114,.28) !important; overflow:hidden !important;
+}
+/* CTA içeriğini gizle, metni biz verelim */
+#zt-panel button[data-zt="cta"] > *{ visibility:hidden !important; }
+#zt-panel button[data-zt="cta"]::after{
+  content:"Generate Handoff" !important;
+  position:absolute !important; left:50% !important; top:50% !important; transform:translate(-50%,-50%) !important;
+  color:#000 !important; font-weight:800 !important; font-size:16px !important; letter-spacing:.2px !important; line-height:1 !important; pointer-events:none !important;
+}
+/* Solda tek ikon (DOĞRU DOSYA: zticontrans.png) */
+#zt-panel button[data-zt="cta"]::before{
+  content:"" !important;
+  position:absolute !important; left:var(--cta-icon-left) !important; top:50% !important; transform:translateY(-50%) !important;
+  width:18px !important; height:18px !important;
+  background:url("zticontrans.png") no-repeat center / contain !important; pointer-events:none !important;
+}
+#zt-panel button[data-zt="cta"]:hover{ background:var(--zt-accent-hover) !important; transform:translateY(-1px) !important; }
+
+/* Logout'u net ayır (asla etkilenmesin) */
+#zt-panel button[data-action="logout"]{
+  background:#1e1e1e !important; color:#eaeef7 !important;
+  border:1px solid rgba(255,255,255,.1) !important; border-radius:12px !important;
+  padding:8px 14px !important; font-weight:700 !important;
+}
+#zt-panel button[data-action="logout"]::before,
+#zt-panel button[data-action="logout"]::after{ content:none !important; background:none !important; }
+
+/* Kart/chip (mevcudu koru) */
+#zt-panel .zt-card{ background:#0f1115; border:1px solid var(--zt-border); border-radius:14px; box-shadow:var(--zt-shadow); }
+#zt-panel .user-chip, #zt-panel .zt-chip{ border-radius:999px; font-weight:600; }
+
+/* Footer — Marsirius imzası (mevcut elemanın üstüne yaz) */
+#zt-panel .zt-footer, #zt-panel footer, #zt-panel [data-role="footer"]{
+  margin-top:10px !important; text-align:center !important; color:var(--zt-muted) !important;
+  font-size:12px !important; line-height:1.2 !important; position:relative !important;
+}
+#zt-panel .zt-footer > *, #zt-panel footer > *, #zt-panel [data-role="footer"] > *{ visibility:hidden !important; }
+#zt-panel .zt-footer::before, #zt-panel footer::before, #zt-panel [data-role="footer"]::before{
+  content:"" !important; display:inline-block !important; vertical-align:middle !important;
+  width:18px !important; height:18px !important; margin-right:6px !important;
+  background:url("marsiriusjustlogo.png") no-repeat center / contain !important; transform:translateY(2px) !important;
+}
+#zt-panel .zt-footer::after, #zt-panel footer::after, #zt-panel [data-role="footer"]::after{
+  content:"Created & Powered by Marsirius AI Labs" !important; color:var(--zt-text) !important;
+}
+
+/* Güvenli reset */
+#zt-panel *{ box-sizing:border-box; }

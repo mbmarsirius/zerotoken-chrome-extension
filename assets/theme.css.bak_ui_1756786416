@@ -1,0 +1,52 @@
+/* ZeroToken — Single source of truth (visuals only) */
+
+/* Tokens */
+:host{
+  --bg:#000; --text:#eaeef7; --muted:#a6adbb;
+  --accent:#c1ff72; --accent-hover:#a6ff3b; --success:#22c55e;
+  --radius:16px; --font:"MuseoModerno", ui-sans-serif, -apple-system, Segoe UI, Roboto, Inter, Arial, sans-serif;
+  --logo-w:118px; --logo-h:20px; --cta-h:46px; --cta-icon-left:16px;
+}
+
+/* Panel base */
+#zt-panel{ background:var(--bg); color:var(--text); font-family:var(--font); padding:12px 12px 44px; }
+
+/* Header wordmark — CSS üzerinden görsel (hook: .zt-wordmark) */
+#zt-panel .zt-wordmark{
+  width:var(--logo-w); height:var(--logo-h);
+  background:url("ZTblackbckgrn.png") no-repeat left center/contain;
+}
+
+/* CTA — hook: #zt-handoff-btn (inline stil yok artık) */
+#zt-panel #zt-handoff-btn{
+  position:relative; display:flex; align-items:center; justify-content:center;
+  width:100%; min-height:var(--cta-h);
+  padding:12px 16px 12px calc(var(--cta-icon-left) + 36px);
+  border-radius:var(--radius);
+  border:1px solid rgba(255,255,255,.1);
+  background:var(--accent); color:#000; font-weight:800; font-size:16px; letter-spacing:.2px;
+  box-shadow:0 6px 20px rgba(193,255,114,.28);
+}
+#zt-panel #zt-handoff-btn .label{ pointer-events:none; }
+#zt-panel #zt-handoff-btn::before{
+  content:""; position:absolute; left:var(--cta-icon-left); top:50%; transform:translateY(-50%);
+  width:18px; height:18px; background:url("zticontrans.png") no-repeat center/contain;
+}
+#zt-panel #zt-handoff-btn:hover{ background:var(--accent-hover); transform:translateY(-1px); }
+
+/* Progress bar (dokunmadık; görsel hafif iyileştirme) */
+#zt-panel [role="progressbar"]{ border-radius:999px; height:8px; }
+
+/* Footer (panel altına sabit) */
+#zt-panel{ position:relative; }
+#zt-panel .zt-footer-fixedabs{
+  position:absolute; left:50%; bottom:8px; transform:translateX(-50%);
+  display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text); opacity:.9;
+}
+#zt-panel .zt-footer-fixedabs .zt-footer-logo{
+  display:inline-block; width:18px; height:18px;
+  background:url("marsiriusjustlogo.png") no-repeat center/contain;
+}
+
+/* Utilities */
+#zt-panel *{ box-sizing:border-box; }

@@ -1,0 +1,18 @@
+{
+  "name": "zerometer",
+  "version": "1.0.0",
+  "description": "",
+  "main": "content.js",
+  "scripts": {
+    "build": "esbuild bundle.js --bundle --outfile=vendor/bundle.js --allow-overwrite --loader:.wasm=dataurl"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@dqbd/tiktoken": "1.0.22",
+    "@supabase/supabase-js": "2.56.1",
+    "esbuild": "0.25.9"
+  }
+}

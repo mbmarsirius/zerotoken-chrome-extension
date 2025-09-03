@@ -1,0 +1,75 @@
+/* ========== ZeroToken Theme (Shadow DOM) — OLD PERFECT LOOK ========== */
+
+/* Panel */
+#zt-panel {
+  background:#000 !important;
+  color:#e6ebff !important;
+  border:1px solid rgba(255,255,255,.08) !important;
+  border-radius:16px !important;
+  box-shadow:0 18px 50px rgba(0,0,0,.55) !important; /* daha sinematik */
+}
+
+/* Header */
+.zt-brand { display:flex !important; align-items:center !important; gap:8px !important; }
+.zt-wordmark { height:20px !important; width:auto !important; display:block !important; }
+
+/* Token bar */
+#zt-token-fig { margin-top:2px !important; }
+#zt-bar { background:#25c277 !important; }               /* yeşil bar */
+#zt-panel div[style*="height:8px"][style*="overflow:hidden"] {
+  background:#1a2234 !important;                          /* bar arkası */
+  border-radius:6px !important;
+}
+
+/* Cards */
+#zt-panel .card, #zt-panel .box {
+  background:#0b0b0b !important;
+  border:1px solid rgba(255,255,255,.06) !important;
+  border-radius:12px !important;
+  box-shadow:0 10px 24px rgba(0,0,0,.40) !important;
+}
+
+/* ---- LIME CTA (SABİT, eski hal) ---- */
+#zt-handoff-btn{
+  background:#c1ff72 !important;            /* lime */
+  color:#071004 !important;                  /* koyu metin */
+  border:0 !important;
+  border-radius:22px !important;             /* daha yuvarlak */
+  height:56px !important;                    /* eski hissiyat */
+  padding:0 16px !important;
+  width:100% !important;
+
+  display:grid !important;
+  grid-template-columns:56px 1fr 56px !important;
+  align-items:center !important;
+  justify-items:center !important;
+
+  font-weight:800 !important;
+  font-size:18px !important;                 /* daha büyük */
+  letter-spacing:.2px !important;
+  line-height:56px !important;
+  white-space:nowrap !important;
+
+  box-shadow:
+    0 14px 36px rgba(193,255,114,.32),
+    0 2px 0 rgba(0,0,0,.15) !important;      /* glow + hafif taban gölge */
+  transition: transform .12s ease-in-out, filter .12s !important;
+}
+#zt-handoff-btn:hover{ transform: translateY(-1px) !important; }
+
+.zt-cta-icon{
+  height:36px !important; width:36px !important;          /* dengeli görünüm */
+  justify-self:start !important; margin-left:4px !important;
+}
+#zt-handoff-btn .zt-cta-label{ justify-self:center !important; }
+#zt-handoff-btn .zt-cta-spacer{ width:48px !important; height:1px !important; justify-self:end !important; }
+
+/* Loading (markup sabit; class ile görünüm) */
+#zt-handoff-btn.zt-loading { filter:saturate(0.95) brightness(0.98) !important; position:relative !important; }
+#zt-handoff-btn.zt-loading::before {
+  content:"⏳"; position:absolute; left:18px; top:50%; transform:translateY(-50%); opacity:.9;
+}
+
+/* Footer (🎁 yerine) */
+#zt-hint{ display:none !important; }
+

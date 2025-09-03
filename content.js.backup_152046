@@ -1,0 +1,137 @@
+/* -----------------------------------------------------------
+   ZeroToken — content.js (FULL)
+   Branding-only. No functional logic changed.
+   - Injects bundle.js (ESM)
+   - Header: replace text title with ZeroToken wordmark image
+   - Progress bar sits below header (unchanged order)
+   - CTA: vertical layout (icon over label), centered, lime
+   - Footer: stable Marsirius line (icon x2 size), no flicker
+------------------------------------------------------------*/
+
+/* 0) Inject bundle.js as <script type="module"> */
+(function injectModuleOnce(){
+  if (document.querySelector('script[data-zt-bundle="1"]')) return;
+  const s = document.createElement("script");
+  s.type = "module";
+  s.dataset.ztBundle = "1";
+  s.src = chrome.runtime.getURL("bundle.js");
+  document.documentElement.appendChild(s);
+  console.info("[ZeroToken] bundle.js injected as module");
+})();
+
+/* 1) Branding & Layout */
+(function brandingUI(){
+  const iconURL      = chrome.runtime.getURL("assets/zerotokenlogotrans.png");     // pink bracket icon (transparent)
+  const wordmarkURL  = chrome.runtime.getURL("assets/ZeroToken Trans.png");        // full "zerotoken" wordmark
+  const marsiriusURL = chrome.runtime.getURL("assets/marsiriusjustlogo.png");      // footer icon
+
+  function panel(){ return document.getElementById("zt-panel") || document.querySelector(".zt-panel") || null; }
+
+  function apply(){
+    const root = panel();
+    if (!root || root.dataset.ztBrandingApplied === "1") return false;
+    root.dataset.ztBrandingApplied = "1";
+
+    /* ---------- STYLE PATCH ---------- */
+    const css = document.createElement("style");
+    css.textContent = `
+      /* Full black theme */
+      #zt-panel{
+        background:#000 !important;
+        border:1px solid rgba(255,255,255,.08) !important;
+        border-radius:16px !important;
+        overflow:hidden;
+      }
+
+      /* Header row: keep meter row as-is, just swap left label with wordmark */
+      #zt-panel .zt-wordmark{
+        height:20px; width:auto; display:block;
+        filter: drop-shadow(0 0 0 transparent);
+      }
+      /* Make room so meter never overlaps header */
+      #zt-token-fig{ margin-top: 2px !important; }
+
+      /* Cards */
+      #zt-panel .card, #zt-panel .box{
+        background:#0b0b0b !important;
+        border:1px solid rgba(255,255,255,.06) !important;
+        border-radius:12px !important;
+      }
+
+      /* CTA — vertical layout (icon over label), centered & lime */
+      #zt-panel #zt-handoff-btn,
+      #zt-panel .generate-btn,
+      #zt-panel button.primary{
+        background:#c1ff72 !important;
+        color:#071004 !important;
+        border:0 !important;
+        border-radius:22px !important;
+        padding:16px 18px !important;
+        width:100% !important;
+        display:flex !important;
+        flex-direction:column !important;
+        align-items:center !important;
+        justify-content:center !important;
+        gap:8px !important;
+        font-weight:800 !important;
+        font-size:17px !important;
+        letter-spacing:.2px;
+        box-shadow:0 14px 34px rgba(193,255,114,.35) !important;
+        transition: transform .12s ease-in-out, filter .12s;
+      }
+      #zt-panel #zt-handoff-btn:hover{ transform: translateY(-1px) scale(1.01); }
+      #zt-panel .zt-cta-icon{
+        height:30px; width:auto; display:block;
+        transform: translateY(-1px);
+      }
+
+      /* Hide dynamic hint (core updates it periodically) and add our stable footer */
+      #zt-hint{ display:none !important; }
+
+      #zt-brand-footer{
+        display:flex; align-items:center; justify-content:center;
+        gap:12px; margin-top:12px;
+        font-size:13px; opacity:.95; color:#eaf7ff;
+      }
+      #zt-brand-footer img{ height:40px; width:auto; display:inline-block; } /* 2× bigger */
+    `;
+    root.prepend(css);
+
+    /* ---------- HEADER WORDMARK REPLACE ---------- */
+    // Structure from core: first row = header (title on left, token fig on right):contentReference[oaicite:1]{index=1}
+    const headerRow = root.querySelector(":scope > div:first-child");
+    if (headerRow) {
+      const leftCell = headerRow.querySelector(":scope > div:first-child");
+      if (leftCell) {
+        leftCell.innerHTML = `<img class="zt-wordmark" src="${wordmarkURL}" alt="ZeroToken">`;
+      }
+    }
+
+    /* ---------- CTA CONTENT (icon over label) ---------- */
+    const btn =
+      root.querySelector("#zt-handoff-btn") ||
+      root.querySelector(".generate-btn") ||
+      root.querySelector("button.primary");
+    if (btn) {
+      btn.innerHTML = `<img class="zt-cta-icon" src="${iconURL}" alt=""> <span>Generate Handoff</span>`;
+    }
+
+    /* ---------- STABLE FOOTER (no flicker) ---------- */
+    if (!document.getElementById("zt-brand-footer")) {
+      const brand = document.createElement("div");
+      brand.id = "zt-brand-footer";
+      brand.innerHTML = `<img src="${marsiriusURL}" alt="Marsirius"> <span>Created & Powered by Marsirius AI Labs</span>`;
+      // place after original hint (even if hidden), or append at end
+      const hint = root.querySelector("#zt-hint");
+      if (hint && hint.parentNode) hint.insertAdjacentElement("afterend", brand);
+      else root.appendChild(brand);
+    }
+
+    console.info("[ZeroToken] Branding applied (wordmark header, lime vertical CTA, stable Marsirius footer).");
+    return true;
+  }
+
+  if (apply()) return;
+  let tries = 0;
+  const t = setInterval(()=>{ if (apply() || ++tries > 60) clearInterval(t); }, 250); // try up to 15s
+})();

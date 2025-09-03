@@ -1,0 +1,481 @@
+// ZeroToken content.js — STUB
+try {
+  document.documentElement.setAttribute('data-zt-stub', '1');
+  console.log('[ZeroToken] content.js STUB çalıştı.');
+} catch {}
+// === ZT monotonic clamp + singleton sweeper (append-only) ===
+(() => {
+  const S = (window.ZT_STATE ||= {}); S.last = S.last || 0;
+
+  function clamp(p){ p = Math.max(0, Math.min(100, p|0)); S.last = Math.max(S.last, p); return S.last; }
+
+  // 1) Yakalanabilen global progress setter'ları sar
+  ["updateProgressBar","setProgress","renderProgress"].forEach((k)=>{
+    const f = window[k];
+    if (typeof f === "function" && !f.__ztWrap){
+      window[k] = (v)=>f(clamp(Number(v)||0));
+      window[k].__ztWrap = true;
+    }
+  });
+
+  // 2) DOM tabanlı şeritleri de kilitle
+  function clampDOM(){
+    const root = document.getElementById("zt-panel")?.getRootNode() || document;
+    const bar  = root.querySelector("#zt-prog-bar");
+    const fig  = root.querySelector("#zt-prog-fig");
+    const txt  = (fig?.textContent||"").match(/(\d{1,3})/);
+    const raw  = txt ? Number(txt[1]) : 0;
+    const mono = clamp(raw);
+    if (bar) bar.style.width = mono + "%";
+    if (fig) fig.textContent = mono + "%";
+  }
+
+  // 3) Logo/Footer tekillik (JS kaynaklı tekrarları süpür)
+  function sweepOnce(){
+    const sh = document.getElementById("zt-host")?.shadowRoot;
+    if (!sh) return;
+
+    // — LOGO: tek kopya
+    const logos = [...sh.querySelectorAll('.zt-wordmark-fixed,[data-zt="logo"]')];
+    logos.slice(1).forEach(n => n.remove());
+
+    // — FOOTER: tek kopya
+    const footers = [...sh.querySelectorAll('.zt-footer, .zt-footer-fixed, .zt-footer-final, [data-zt="footer"]')];
+    footers.slice(1).forEach(n => n.remove());
+
+    clampDOM();
+  }
+
+  // İlk çalıştırma + reflow gözlemi
+  (document.readyState === "loading"
+    ? document.addEventListener("DOMContentLoaded", sweepOnce)
+    : sweepOnce());
+
+  const mo = new MutationObserver(()=>{ try{ sweepOnce(); }catch{} });
+  mo.observe(document.documentElement, {subtree:true, childList:true, attributes:true});
+})();
+// === ZT VISUAL GUARD v2 — purely cosmetic, idempotent ===
+(() => {
+  const IMG_LOGO = chrome.runtime.getURL('assets/ZTblackbckgrn.png');
+  const IMG_MRS  = chrome.runtime.getURL('marsiriusjustlogo.png');
+  function $root(){ const host=document.getElementById('zt-panel'); return host?host.getRootNode():document; }
+
+  function ensureBigLogo(root){
+    const header = root.querySelector('.zt-header') || root.querySelector('#zt-panel'); if(!header) return;
+    header.querySelectorAll('.zt-brand, .zt-wordmark, img[alt*="zero" i], img[alt*="token" i]')
+      .forEach(el=>el.style.setProperty('display','none','important')); // küçük logo kapat
+    let big = root.querySelector('.zt-wordmark-fixed');
+    if(!big){ big=document.createElement('div'); big.className='zt-wordmark-fixed'; header.appendChild(big); }
+    const s=big.style;
+    s.setProperty('position','absolute','important'); s.setProperty('left','12px','important'); s.setProperty('top','6px','important');
+    s.setProperty('height','40px','important'); s.setProperty('width','auto','important'); s.setProperty('z-index','10','important');
+    s.setProperty('background-image',`url(${IMG_LOGO})`,'important'); s.setProperty('background-repeat','no-repeat','important');
+    s.setProperty('background-position','left center','important'); s.setProperty('background-size','auto 100%','important');
+    s.setProperty('pointer-events','none','important');
+  }
+
+  function fixCTAIcon(root){
+    const icon=root.querySelector('.zt-cta-icon');
+    if(icon){
+      icon.style.setProperty('width','24px','important');
+      icon.style.setProperty('height','24px','important');
+      icon.style.setProperty('left','16px','important');
+      icon.style.setProperty('top','50%','important');
+      icon.style.setProperty('transform','translateY(-50%)','important');
+      icon.style.setProperty('background-size','contain','important');
+    }
+  }
+
+  function fixFooter(root){
+    const panel=root.querySelector('#zt-panel'); const hint=root.querySelector('#zt-hint'); if(!hint) return;
+    [panel, ...root.querySelectorAll('.zt-card,.zt-section')].forEach(n=>n&&n.style.setProperty('background','#000','important'));
+    // Created by satırı
+    let created=root.querySelector('#zt-created-by');
+    if(!created){ created=document.createElement('div'); created.id='zt-created-by'; created.textContent='Created by Marsirius AI Labs'; hint.insertAdjacentElement('afterend',created); }
+    created.style.setProperty('text-align','center','important'); created.style.setProperty('margin','6px 0 0','important');
+    created.style.setProperty('font-weight','700','important'); created.style.setProperty('color','#aeb6c2','important');
+    // Eski alt ikonları gizle
+    root.querySelectorAll('.zt-footer, .zt-footer-fixed, .zt-footer-fixedabs, img[alt*="marsirius" i]')
+        .forEach(n=>n.style.setProperty('display','none','important'));
+    // Tek ikon
+    let mri=root.querySelector('#zt-mrs-icon');
+    if(!mri){ mri=document.createElement('div'); mri.id='zt-mrs-icon'; created.insertAdjacentElement('afterend',mri); }
+    mri.style.setProperty('width','24px','important'); mri.style.setProperty('height','24px','important');
+    mri.style.setProperty('margin','6px auto 0','important');
+    mri.style.setProperty('background-image',`url(${IMG_MRS})`,'important');
+    mri.style.setProperty('background-repeat','no-repeat','important');
+    mri.style.setProperty('background-position','center','important');
+    mri.style.setProperty('background-size','contain','important');
+    hint.style.setProperty('padding-bottom','0','important'); hint.style.setProperty('margin-bottom','0','important');
+  }
+
+  function applyAll(){ const r=$root(); if(!r) return; try{ensureBigLogo(r);}catch{} try{fixCTAIcon(r);}catch{} try{fixFooter(r);}catch{} }
+  if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', applyAll, {once:true}); } else applyAll();
+  new MutationObserver(()=>applyAll()).observe(document.documentElement,{subtree:true,childList:true,attributes:true});
+})();
+// === ZT VISUAL GUARD v3 — Shadow DOM aware (purely cosmetic) ===
+(() => {
+  const IMG_LOGO = chrome.runtime.getURL('assets/ZTblackbckgrn.png');
+  const IMG_MRS  = chrome.runtime.getURL('assets/marsiriusjustlogo.png');
+
+  // Shadow root'u güvenli şekilde bul
+  function getRoot() {
+    const host = document.querySelector('#zt-host');
+    if (host && host.shadowRoot) return host.shadowRoot;
+
+    // Fallback: herhangi bir shadow host içinde #zt-panel arayalım
+    for (const el of document.querySelectorAll('*')) {
+      if (el.shadowRoot && el.shadowRoot.getElementById('zt-panel')) {
+        return el.shadowRoot;
+      }
+    }
+    return null;
+  }
+
+  function ensureBigLogo(root) {
+    const panel  = root.getElementById('zt-panel') || root;
+    const header = root.querySelector('.zt-header') || panel;
+
+    // Küçük logo kaynaklarını kapat (sadece header kapsamı)
+    header.querySelectorAll('.zt-brand, .zt-wordmark, img[alt*="zero" i], img[alt*="token" i]')
+      .forEach(el => el.style.setProperty('display', 'none', 'important'));
+
+    // Büyük logo yoksa oluştur
+    let big = root.querySelector('.zt-wordmark-fixed');
+    if (!big) {
+      big = root.createElement ? root.createElement('div') : document.createElement('div');
+      big.className = 'zt-wordmark-fixed';
+      header.appendChild(big);
+    }
+
+    // Büyük logo konum/ölçü (inline + !important => diğer her şeyi ezer)
+    const s = big.style;
+    s.setProperty('position','absolute','important');
+    s.setProperty('left','12px','important');
+    s.setProperty('top','6px','important');       // gerekirse 8–10 yap
+    s.setProperty('height','40px','important');   // ≈ 2×
+    s.setProperty('width','auto','important');
+    s.setProperty('z-index','10','important');
+    s.setProperty('background-image',`url(${IMG_LOGO})`,'important');
+    s.setProperty('background-repeat','no-repeat','important');
+    s.setProperty('background-position','left center','important');
+    s.setProperty('background-size','auto 100%','important');
+    s.setProperty('pointer-events','none','important');
+  }
+
+  function fixCTAIcon(root) {
+    // content.core.js, .zt-cta-icon'a inline 18px veriyor → 24px'e yükselt
+    const icon = root.querySelector('.zt-cta-icon');
+    if (!icon) return;
+    icon.style.setProperty('width','24px','important');
+    icon.style.setProperty('height','24px','important');
+    icon.style.setProperty('left','16px','important');
+    icon.style.setProperty('top','50%','important');
+    icon.style.setProperty('transform','translateY(-50%)','important');
+    icon.style.setProperty('background-size','contain','important');
+  }
+
+  function fixFooter(root) {
+    const panel = root.getElementById('zt-panel');
+    const hint  = root.querySelector('#zt-hint');
+    if (!panel || !hint) return;
+
+    // Arkaplanları saf siyah
+    [panel, ...root.querySelectorAll('.zt-card, .zt-section')].forEach(n=>{
+      if (n) n.style.setProperty('background','#000','important');
+    });
+
+    // “ZeroToken Pro …” zaten #zt-hint içinde.
+    // Altına "Created by ..." (tek kopya)
+    let created = root.querySelector('#zt-created-by');
+    if (!created) {
+      created = document.createElement('div');
+      created.id = 'zt-created-by';
+      created.textContent = 'Created by Marsirius AI Labs';
+      hint.insertAdjacentElement('afterend', created);
+    }
+    created.style.setProperty('text-align','center','important');
+    created.style.setProperty('margin','6px 0 0','important');
+    created.style.setProperty('font-weight','700','important');
+    created.style.setProperty('color','#aeb6c2','important');
+
+    // Eskiden kalan alt ikon yerleştiricilerini kapat
+    root.querySelectorAll('.zt-footer, .zt-footer-fixed, .zt-footer-fixedabs, img[alt*="marsirius" i]')
+      .forEach(n => n.style.setProperty('display','none','important'));
+
+    // Created by satırının altına tek ikon (mevcut boyut ~24px)
+    let mri = root.querySelector('#zt-mrs-icon');
+    if (!mri) {
+      mri = document.createElement('div');
+      mri.id = 'zt-mrs-icon';
+      created.insertAdjacentElement('afterend', mri);
+    }
+    mri.style.setProperty('width','24px','important');
+    mri.style.setProperty('height','24px','important');
+    mri.style.setProperty('margin','6px auto 0','important');
+    mri.style.setProperty('background-image',`url(${IMG_MRS})`,'important');
+    mri.style.setProperty('background-repeat','no-repeat','important');
+    mri.style.setProperty('background-position','center','important');
+    mri.style.setProperty('background-size','contain','important');
+
+    // Alt boşluğu sıfırla
+    hint.style.setProperty('padding-bottom','0','important');
+    hint.style.setProperty('margin-bottom','0','important');
+  }
+
+  function applyAll() {
+    const root = getRoot();
+    if (!root) return false;
+    try { ensureBigLogo(root); } catch {}
+    try { fixCTAIcon(root); }   catch {}
+    try { fixFooter(root); }    catch {}
+    return true;
+  }
+
+  // Panel henüz mount edilmediyse bekleyip uygula
+  if (!applyAll()) {
+    const mo = new MutationObserver(() => { if (applyAll()) mo.disconnect(); });
+    mo.observe(document.documentElement, { childList:true, subtree:true });
+  }
+
+  // Re-render/reflow guard
+  new MutationObserver(() => applyAll())
+    .observe(document.documentElement, { childList:true, subtree:true, attributes:true });
+})();
+// === ZT CLEAN FOOTER — Shadow içinde DOM kopyalarını kaldır (CSS-only footer'a geçiş) ===
+(() => {
+  if (window.__ZT_FOOTER_CLEANED__) return; window.__ZT_FOOTER_CLEANED__ = true;
+
+  function getRoot(){
+    const host = document.querySelector('#zt-host');
+    return (host && host.shadowRoot) ? host.shadowRoot : null;
+  }
+
+  function cleanOnce(root){
+    if (!root) return false;
+    // 1) "Created by" ve ikonun gerçek DOM kopyalarını sil
+    root.querySelectorAll('#zt-created-by, #zt-mrs-icon').forEach(n => n.remove());
+    // 2) Core varyantlarını da görünmez bırak (görünür ise)
+    root.querySelectorAll('.zt-footer, .zt-footer-fixed, .zt-footer-fixedabs, .zt-footer-final')
+        .forEach(n => n.style.setProperty('display','none','important'));
+    // 3) #zt-hint alt boşluklarını sıfırla (pseudo için nefes alanı)
+    const hint = root.querySelector('#zt-hint');
+    if (hint){
+      hint.style.setProperty('padding-bottom','0','important');
+      hint.style.setProperty('margin-bottom','0','important');
+      hint.style.setProperty('text-align','center','important');
+    }
+    return true;
+  }
+
+  function run(){ const r = getRoot(); return cleanOnce(r); }
+
+  // İlk çalıştır
+  if (!run()){
+    const mo = new MutationObserver(() => { if (run()) mo.disconnect(); });
+    mo.observe(document.documentElement, { childList:true, subtree:true });
+  }
+
+  // Re-render koruması — sadece temizlik (yeni öğe eklemez)
+  new MutationObserver(() => run())
+    .observe(document.documentElement, { childList:true, subtree:true, attributes:true });
+})();
+// === ZT • Visual clone for handoff button (logic stays on original) ===
+(() => {
+  const ICON = chrome.runtime.getURL('assets/zticontrans.png');
+
+  function getRoot(){
+    const host = document.querySelector('#zt-host');
+    return host && host.shadowRoot ? host.shadowRoot : null;
+  }
+
+  function apply(){
+    const root = getRoot();
+    if(!root) return false;
+
+    const orig = root.querySelector('#zt-handoff-btn');
+    if(!orig || root.querySelector('#zt-handoff-btn-visual')) return true; // already applied
+
+    // 1) Kapsayıcı oluştur (ölçüler orijinalden)
+    const wrap = document.createElement('div');
+    wrap.style.position = 'relative';
+    wrap.style.display  = 'inline-block';
+    wrap.style.width    = orig.offsetWidth + 'px';
+    wrap.style.height   = orig.offsetHeight + 'px';
+
+    // Orijinali wrap içine al, görünmez overlay yap (logic orijinalde!)
+    orig.parentNode.insertBefore(wrap, orig);
+    wrap.appendChild(orig);
+
+    Object.assign(orig.style, {
+      position:'absolute', inset:'0',
+      opacity:'0', pointerEvents:'none' // click'i biz yakalayıp orijinale ileteceğiz
+    });
+
+    // 2) Görsel buton
+    const vis = document.createElement('button');
+    vis.id = 'zt-handoff-btn-visual';
+    vis.type = 'button';
+    vis.setAttribute('aria-label', orig.getAttribute('aria-label') || 'Generate Handoff');
+    Object.assign(vis.style, {
+      position:'absolute', inset:'0',
+      display:'inline-flex', alignItems:'center', justifyContent:'center',
+      gap:'10px',
+      width:'100%', height:'100%',
+      border:'1px solid rgba(0,0,0,.10)',
+      borderRadius:'14px',
+      background:'#C1FFF2', // mevcut yeşilimsi renk
+      color:'#0a0f14',
+      fontWeight:'800', letterSpacing:'.2px',
+      boxShadow:'0 8px 24px rgba(124,58,237,.28)',
+      cursor:'pointer', userSelect:'none',
+      transition:'filter .15s ease, transform .05s ease'
+    });
+
+    // 3) İkon + Metin
+    const ico = document.createElement('span');
+    Object.assign(ico.style, {
+      width:'1.15em', height:'1.15em', flex:'0 0 auto',
+      backgroundImage:`url(${ICON})`,
+      backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain'
+    });
+
+    const label = document.createElement('span');
+    label.textContent = orig.textContent.trim() || 'Generate Handoff';
+    Object.assign(label.style, { fontSize:'16px', lineHeight:'1' });
+
+    vis.appendChild(ico);
+    vis.appendChild(label);
+    wrap.appendChild(vis);
+
+    // 4) Hover/active micro-etkiler
+    vis.addEventListener('mouseenter',()=>{ vis.style.filter='brightness(1.06)'; });
+    vis.addEventListener('mouseleave',()=>{ vis.style.filter='none';             });
+    vis.addEventListener('mousedown', ()=>{ vis.style.transform='translateY(1px)'; });
+    vis.addEventListener('mouseup',   ()=>{ vis.style.transform='none'; });
+
+    // 5) Tıklamayı orijinale ilet
+    vis.addEventListener('click', (e)=>{ e.preventDefault(); e.stopPropagation(); orig.click(); });
+
+    return true;
+  }
+
+  if(!apply()){
+    const mo = new MutationObserver(()=>{ if(apply()) mo.disconnect(); });
+    mo.observe(document.documentElement, {childList:true, subtree:true});
+  }
+})();
+// === ZT • VISUAL CLONE SYNC v2 — mirror original styles & size (logic intact) ===
+(() => {
+  const ICON = chrome.runtime.getURL('assets/zticontrans.png');
+
+  function getRoot(){
+    const host = document.querySelector('#zt-host');
+    return host && host.shadowRoot ? host.shadowRoot : null;
+  }
+
+  function mirrorStyles(from, to){
+    const cs = getComputedStyle(from);
+    const map = {
+      backgroundColor: 'backgroundColor',
+      borderRadius:    'borderRadius',
+      boxShadow:       'boxShadow',
+      color:           'color',
+      font:            'font',
+      letterSpacing:   'letterSpacing',
+      lineHeight:      'lineHeight',
+      textTransform:   'textTransform',
+    };
+    Object.entries(map).forEach(([k,v]) => { to.style[v] = cs[k]; });
+
+    // Padding’i de aynı yap (iç düzeni bozmayalım)
+    to.style.paddingTop    = cs.paddingTop;
+    to.style.paddingRight  = cs.paddingRight;
+    to.style.paddingBottom = cs.paddingBottom;
+    to.style.paddingLeft   = cs.paddingLeft;
+
+    // Border (orijinalde varsa)
+    to.style.border        = `${cs.borderWidth} ${cs.borderStyle} ${cs.borderColor}`;
+  }
+
+  function build(){
+    const root = getRoot(); if(!root) return false;
+    const orig = root.querySelector('#zt-handoff-btn'); if(!orig) return false;
+
+    // Eğer daha önce kurulduysa sadece eşitle & çık
+    let wrap = orig.parentElement;
+    let vis  = root.querySelector('#zt-handoff-btn-visual');
+
+    if(!vis || !wrap || wrap.id !== 'zt-handoff-btn-wrap'){
+      // Yeni kurulum
+      wrap = document.createElement('div');
+      wrap.id = 'zt-handoff-btn-wrap';
+      wrap.style.position = 'relative';
+      wrap.style.display  = 'inline-block';
+      orig.parentNode.insertBefore(wrap, orig);
+      wrap.appendChild(orig);
+
+      // Orijinal görünmez, ama logic’te kalsın
+      Object.assign(orig.style, { position:'absolute', inset:'0',
+        opacity:'0', pointerEvents:'none' });
+
+      vis = document.createElement('button');
+      vis.id = 'zt-handoff-btn-visual';
+      vis.type = 'button';
+      vis.setAttribute('aria-label', orig.getAttribute('aria-label') || 'Generate Handoff');
+
+      // İçerik: ikon + metin
+      const ico = document.createElement('span');
+      Object.assign(ico.style, {
+        width:'1.15em', height:'1.15em', flex:'0 0 auto',
+        backgroundImage:`url(${ICON})`,
+        backgroundRepeat:'no-repeat', backgroundPosition:'center', backgroundSize:'contain'
+      });
+      const label = document.createElement('span');
+      label.textContent = (orig.textContent || 'Generate Handoff').trim();
+
+      Object.assign(vis.style, {
+        position:'absolute', inset:'0',
+        display:'inline-flex', alignItems:'center', justifyContent:'center', gap:'10px',
+        cursor:'pointer', userSelect:'none', transition:'filter .15s ease, transform .05s ease'
+      });
+
+      vis.appendChild(ico); vis.appendChild(label);
+      wrap.appendChild(vis);
+
+      // Hover/active
+      vis.addEventListener('mouseenter',()=>{ vis.style.filter='brightness(1.06)'; });
+      vis.addEventListener('mouseleave',()=>{ vis.style.filter='none'; });
+      vis.addEventListener('mousedown', ()=>{ vis.style.transform='translateY(1px)'; });
+      vis.addEventListener('mouseup',   ()=>{ vis.style.transform='none'; });
+
+      // Click’i orijinale yönlendir
+      vis.addEventListener('click', (e)=>{ e.preventDefault(); e.stopPropagation(); orig.click(); });
+    }
+
+    // Stil & boyut senkronu
+    mirrorStyles(orig, vis);
+    wrap.style.width  = orig.offsetWidth  + 'px';
+    wrap.style.height = orig.offsetHeight + 'px';
+
+    // Label fontunun tam kopyası
+    vis.querySelector('span:last-child').style.font = getComputedStyle(orig).font;
+
+    return {wrap, vis, orig};
+  }
+
+  // İlk kurulum
+  let objs = build();
+
+  // Boyut veya stil değişirse canlı eşitle
+  const ro = new ResizeObserver(() => { objs = build(); });
+  const root = getRoot();
+  if(root){
+    const orig = root.querySelector('#zt-handoff-btn');
+    if(orig) ro.observe(orig);
+  }
+
+  // DOM değişirse tekrar dener
+  const mo = new MutationObserver(()=>{ objs = build(); });
+  mo.observe(document.documentElement, {childList:true, subtree:true, attributes:true});
+})();
