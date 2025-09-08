@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ZeroToken Settings</title>
+    <style>
+      body{font:14px/1.6 Inter,system-ui;margin:24px;color:#e6ebff;background:#0b0c10}
+      .card{background:#121622;border:1px solid rgba(193,255,114,.22);border-radius:12px;padding:16px;max-width:720px}
+      button{background:#323644;color:#fff;border:0;padding:8px 12px;border-radius:10px;cursor:pointer;font-weight:600}
+      button.primary{background:#c1ff72;color:#000}
+      label{display:flex;align-items:center;gap:10px}
+      a{color:#99acff}
+    </style>
+  </head>
+  <body>
+    <h2>ZeroToken • Settings</h2>
+    <div class="card">
+      <label>
+        <input id="saveRecaps" type="checkbox" />
+        Save handoff recaps to my ZeroToken account (recommended)
+      </label>
+      <div style="margin-top:14px;display:flex;gap:10px">
+        <button id="export" class="primary">Export my data</button>
+        <button id="delete">Delete my account & data</button>
+      </div>
+      <div id="msg" style="opacity:.8;margin-top:10px"></div>
+      <div style="margin-top:10px"><a href="https://zerotoken.ai/privacy" target="_blank">Privacy Policy</a></div>
+    </div>
+    <script>
+      const syncGet=(k)=>new Promise(r=>{ try{ chrome.storage.sync.get(k,v=>r(v||{})); }catch{ r({}); } });
+      const syncSet=(o)=>new Promise(r=>{ try{ chrome.storage.sync.set(o,()=>r(true)); }catch{ r(false);} });
+      async function init(){
+        const { zt_cloud_save_recaps } = await syncGet(['zt_cloud_save_recaps']);
+        document.getElementById('saveRecaps').checked = zt_cloud_save_recaps!==false; // default true
+      }
+      document.getElementById('saveRecaps').addEventListener('change', async (e)=>{
+        await syncSet({ zt_cloud_save_recaps: !!e.target.checked });
+        document.getElementById('msg').textContent = 'Preference saved.';
+      });
+      document.getElementById('export').addEventListener('click', async ()=>{
+        try{
+          const url = 'https://ppvergvfxththbwtjsmu.supabase.co/functions/v1/export_account';
+          const res = await fetch(url,{ headers:{ 'authorization': 'Bearer '+(await getToken()) }});
+          const blob = new Blob([await res.text()], { type: 'application/json;charset=utf-8' });
+          const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='zerotoken_export.json'; a.click();
+        }catch(e){ document.getElementById('msg').textContent='Export failed.'; }
+      });
+      document.getElementById('delete').addEventListener('click', async ()=>{
+        if(!confirm('Delete your account and all data? This cannot be undone.')) return;
+        try{
+          const url = 'https://ppvergvfxththbwtjsmu.supabase.co/functions/v1/delete_account';
+          const res = await fetch(url,{ method:'POST', headers:{ 'authorization': 'Bearer '+(await getToken()) }});
+          if(res.ok){ document.getElementById('msg').textContent='Account deleted. Please sign out.'; }
+          else { document.getElementById('msg').textContent='Delete failed.'; }
+        }catch(e){ document.getElementById('msg').textContent='Delete failed.'; }
+      });
+      async function getToken(){ try{ const s=await chrome.storage.sync.get(['supabase_access_token']); return s.supabase_access_token||''; }catch{return ''} }
+      init();
+    </script>
+  </body>
+  </html>
+
+

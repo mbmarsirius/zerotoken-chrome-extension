@@ -3,6 +3,7 @@
   "name": "ZeroToken – Handoff Reports",
   "version": "1.0.1",
   "description": "Handoff reports for ChatGPT. One‑click Copy/PDF/Email. Free 3 · Pro unlimited.",
+  "options_page": "options.html",
   "icons": {
     "16": "assets/Iconlimeback.png",
     "32": "assets/Iconlimeback.png",
@@ -44,11 +45,15 @@
     }
   ],
   "permissions": [
-    "storage"
+    "storage",
+    "scripting",
+    "activeTab",
+    "clipboardWrite"
   ],
   "host_permissions": [
-    "https://ppvergvfxththbwtjsmu.supabase.co/*",
-    "https://*.supabase.co/*"
+    "https://chat.openai.com/*",
+    "https://chatgpt.com/*",
+    "https://ppvergvfxththbwtjsmu.supabase.co/*"
   ],
   "web_accessible_resources": [
     {

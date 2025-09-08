@@ -1037,6 +1037,8 @@ function tweenPercent(from,to,durationMs,onFrame,done){
 
 /* ───────────────── Start→Status (smoother) ───────────────── */
 async function onHandoffClick(){
+  // Assert user-initiated
+  try{ (window as any).__zt_user_initiated = Date.now(); }catch{}
   if(uiBusy) return; uiBusy=true;
   // Require login before using handoff
   if(!currentUser){ uiBusy=false; openAuthMiniModal('login'); toast('Please login to generate a handoff'); return; }
@@ -1191,12 +1193,15 @@ async function onHandoffClick(){
     // Mevcut çalışan sistemi kullan
     let usedEndpoint = EDGE_START; 
     let startRes;
+    // Respect cloud-save toggle (ephemeral mode hint only; server may ignore)
+    let ephemeral = false; try{ const s=await chrome.storage?.sync?.get?.(['zt_cloud_save_recaps']); ephemeral = s && s.zt_cloud_save_recaps===false; }catch{}
     const basePayload = { 
       userId: currentUser?.id || null, 
       plan: (userProfile?.plan || "free").toLowerCase(), 
       title, 
       threadId: getThreadId(), 
-      chunks 
+      chunks,
+      meta: { ts: Date.now(), cause: "manual", ephemeral }
     };
     const payload = basePayload;
     try{
@@ -1619,6 +1624,34 @@ async function maybeAutoCheckpoint(){
 
 // === ZeroToken: Stable tagging for CTA & Logout (visual theming) ===
 (function(){
+  // === Chrome Web Store compliance flag (safe default: false). Set true to enable banner/options wiring ===
+  const ZTCWS_COMPLIANCE = true;
+
+  // Helper: read/write chrome.storage.sync safely
+  const syncGet = (keys)=> new Promise(res=>{
+    try{ chrome.storage?.sync?.get?.(keys,(v)=>res(v||{})); }catch{ res({}); }
+  });
+  const syncSet = (obj)=> new Promise(res=>{ try{ chrome.storage?.sync?.set?.(obj,()=>res(true)); }catch{ res(false);} });
+
+  // First-run consent banner (non-blocking, appears once)
+  async function maybeShowConsentBanner(){
+    if(!ZTCWS_COMPLIANCE) return;
+    const { zt_consent_v1 } = await syncGet(['zt_consent_v1']);
+    if(zt_consent_v1===true) return;
+    const banner = document.createElement('div');
+    banner.id = 'zt-consent-banner';
+    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#0b0c10;color:#e6ebff;border-bottom:1px solid rgba(193,255,114,.22);font:13px/1.45 Inter,system-ui;display:flex;gap:10px;align-items:center;justify-content:center;padding:8px 12px';
+    banner.innerHTML = `ZeroToken saves your handoff recaps to your account so you can reopen them later. You can turn this off anytime in Settings. <button id="zt-ok" style="background:#c1ff72;color:#000;border:0;border-radius:8px;padding:6px 10px;cursor:pointer;font-weight:700">OK</button> <a id="zt-privacy" href="#" style="color:#99acff;text-decoration:underline">Privacy</a>`;
+    document.documentElement.appendChild(banner);
+    banner.querySelector('#zt-ok').addEventListener('click', async ()=>{
+      await syncSet({ zt_consent_v1:true, zt_cloud_save_recaps:true });
+      banner.remove();
+    });
+    banner.querySelector('#zt-privacy').addEventListener('click',(e)=>{ e.preventDefault(); window.open('https://zerotoken.ai/privacy','_blank'); });
+  }
+
+  // Kick off consent banner without blocking other init
+  try{ if(document.readyState!=='loading') { maybeShowConsentBanner(); } else { document.addEventListener('DOMContentLoaded', maybeShowConsentBanner, { once: true }); } }catch{}
   const HOST_ID='zt-host';
   function sh(){ return document.getElementById(HOST_ID)?.shadowRoot || null; }
 
