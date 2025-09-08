@@ -9,7 +9,20 @@
 }
 
 /* Panel base */
-#zt-panel{ background:var(--bg); color:var(--text); font-family:var(--font); padding:12px 12px 44px; }
+#zt-panel{
+  width: 300px !important;              /* slimmer */
+  max-width: 92vw !important;
+  background: rgba(0,0,0,.72) !important; /* pure black glass */
+  -webkit-backdrop-filter: saturate(160%) blur(10px) !important;
+  backdrop-filter: saturate(160%) blur(10px) !important;
+  border: 1px solid rgba(255,255,255,.08) !important;
+  border-radius: 16px !important;
+  color:var(--text); font-family:var(--font); padding:12px 12px 44px;
+}
+#zt-panel .zt-section, 
+#zt-panel .zt-card{
+  background: transparent !important; /* inherit glass */
+}
 
 /* Header wordmark — CSS üzerinden görsel (hook: .zt-wordmark) */
 #zt-panel .zt-wordmark{
@@ -429,7 +442,7 @@
   background-size:contain !important;
   filter:drop-shadow(0 2px 6px rgba(0,0,0,.35));
 }
-/* Header’da başka pseudo-logo kullanan kuralları pasifleştir (son söz bizde) */
+/* Header'da başka pseudo-logo kullanan kuralları pasifleştir (son söz bizde) */
 #zt-panel .zt-brand::before{ content:none !important; display:none !important; }
 /* #zt-panel::before bazı bloklarda header olarak kullanılmış olabilir; onu footer için yeniden tanımlayacağız. */
 /* === ZT • Mustafa Patch v1 — CTA ICON === */
@@ -768,7 +781,7 @@ body:has(#zt-panel) { background:#000 !important; }
   margin-bottom:0 !important;
   text-align:center;
 }
-/* “Created by” yazısı — #zt-hint'in ALTINA gelsin */
+/* "Created by" yazısı — #zt-hint'in ALTINA gelsin */
 #zt-panel #zt-hint::after{
   content:"Created by Marsirius AI Labs";
   display:block;
@@ -791,7 +804,7 @@ body:has(#zt-panel) { background:#000 !important; }
 #zt-panel::after{
   content:"";
   display:block;
-  width:24px; height:24px;          /* “mevcut boyut” */
+  width:24px; height:24px;          /* "mevcut boyut" */
   margin:6px auto 0 auto;
   background:url("marsiriusjustlogo.png") no-repeat center/contain;
   opacity:.98; pointer-events:none;
@@ -868,9 +881,7 @@ body:has(#zt-panel) { background:#000 !important; }
 }
 
 /* Eski alt ikon yerleştiricileri kapat (mini ikonlar) */
-#zt-panel::before, #zt-panel .zt-footer, #zt-panel .zt-footer-fixed, #zt-panel .zt-footer-fixedabs {
-  display:none !important; content:none !important;
-}
+#zt-panel::before, #zt-panel .zt-footer, #zt-panel .zt-footer-fixed, #zt-panel .zt-footer-fixedabs { display:none !important; content:none !important; }
 
 /* Sadece istediğimiz ikon: Created by satırının ALTINA, mevcut boyut */
 #zt-panel::after{
@@ -929,7 +940,7 @@ body:has(#zt-panel) { background:#000 !important; }
 #zt-panel, #zt-panel .zt-card, #zt-panel .zt-section{ background:#000 !important; }
 /* === ZT • FINAL CSS-ONLY FOOTER === */
 
-/* Eski pseudo’ları sıfırla (önceki denemelerden kalmış olabilir) */
+/* Eski pseudo'ları sıfırla (önceki denemelerden kalmış olabilir) */
 #zt-panel::before,
 #zt-panel::after { content: none !important; display: none !important; }
 
@@ -1471,7 +1482,7 @@ body:has(#zt-panel) { background:#000 !important; }
 #zt-panel #zt-handoff-stable:hover{ filter:brightness(1.06); }
 #zt-panel #zt-handoff-stable:active{ transform:translateY(1px); }
 #zt-panel #zt-handoff-stable::before{
-  content:""; position:absolute; margin-left:-40px; /* 56px padd’in içinde 16px kalır */
+  content:""; position:absolute; margin-left:-40px; /* 56px padd'in içinde 16px kalır */
   width:1.15em; height:1.15em; transform:translateY(3px);
   background:url("zticontrans.png") no-repeat center/contain;
   display:inline-block;

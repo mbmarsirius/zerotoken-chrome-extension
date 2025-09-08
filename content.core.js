@@ -5,12 +5,22 @@ const SUPABASE_URL = "https://ppvergvfxththbwtjsmu.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBwdmVyZ3ZmeHRodGhid3Rqc211Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYxODk0MjAsImV4cCI6MjA3MTc2NTQyMH0.GAgKvepBkOaPjFi9i462AGc007dWG-uefj94iw_EgoI";
 
 /* Edge Functions */
-const EDGE_START  = `${SUPABASE_URL}/functions/v1/handoff_start`;
+const EDGE_START  = `${SUPABASE_URL}/functions/v1/continuity_v1`;
 const EDGE_STATUS = `${SUPABASE_URL}/functions/v1/handoff_status`;
 const EMAIL_ENDPOINT = `${SUPABASE_URL}/functions/v1/handoff_email_proxy`;
+// New (flagged) endpoints — may or may not exist; guarded with try/catch
+const EDGE_CAPSULE_SAVE = `${SUPABASE_URL}/functions/v1/capsule_save_v2`;
+const EDGE_MR = `${SUPABASE_URL}/functions/v1/map_reduce_v2`;
+// Removed unused endpoint - using EDGE_START (continuity_v1) directly
 
 /* Visual token limit */
 const TOKEN_LIMIT = 200000;
+
+/* ───────────────── Feature Flags (default: all off, UI unchanged) ───────────────── */
+function readFlags(){ try{ return JSON.parse(localStorage.getItem("ZT_FLAGS")||"{}"); }catch{ return {}; } }
+function isFlagOn(name){ const f=readFlags(); return !!f[name]; }
+function trace(){ if(isFlagOn("TRACE")) { try{ console.log.apply(console, ["[ZT][TRACE]", ...arguments]); }catch{} } }
+// Flags (opt-in via DevTools): NEW_PIPELINE, SHADOW_CPS, EXACT_TOKENS, TRACE, CONT_V3, CONT_V3_SALIENCY, CONT_V3_FAST60, CONT_V3_FAST60_HOTFIX3, CONT_V3_FAST60_HOTFIX4_1
 
 /* ───────────────── Supabase Client ───────────────── */
 let supabase = null;
@@ -35,11 +45,15 @@ let userProfile = null;
 
 async function refreshSessionAndProfile() {
   ensureSupabase();
-  if (!supabase) { console.warn("[ZT] Supabase client missing"); return; }
+  if (!supabase) { trace("[ZT] Supabase client missing"); return; }
   try {
-    const { data: { user }, error } = await supabase.auth.getUser();
-    if (error) { console.warn("[ZT] getUser error:", error.message); currentUser=null; userProfile=null; return; }
-    currentUser = user || null;
+    // First check session to avoid noisy "Auth session missing" on logged-out state
+    const { data: { session }, error: sessErr } = await supabase.auth.getSession();
+    if (sessErr) { trace("[ZT] getSession warn:", sessErr.message); }
+    if (!session) { currentUser = null; userProfile = null; return; }
+
+    const user = session.user || null;
+    currentUser = user;
 
     if (currentUser) {
       const { data } = await supabase
@@ -55,6 +69,26 @@ async function refreshSessionAndProfile() {
     console.error("[ZT] refreshSessionAndProfile failed:", e);
     currentUser = null; userProfile = null;
   }
+}
+
+// Ensure user has a row in `profiles` (plan defaults to free). Safe, non-destructive.
+async function ensureUserProfileExists(defaultPlan = "free"){
+  try{
+    ensureSupabase(); if(!supabase) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    const uid = user?.id; if(!uid) return;
+    // Check existing row first to avoid overwriting plan/counters
+    const { data: existing } = await supabase
+      .from("profiles")
+      .select("id, plan")
+      .eq("id", uid)
+      .maybeSingle();
+    if(!existing){
+      await supabase.from("profiles").insert({ id: uid, plan: (defaultPlan||"free").toLowerCase(), checkpoint_used: 0, handoff_used: 0 }).catch(()=>{});
+    } else if(!existing.plan){
+      await supabase.from("profiles").update({ plan: (defaultPlan||"free").toLowerCase() }).eq("id", uid).catch(()=>{});
+    }
+  }catch(e){ console.warn("[ZT] ensureUserProfileExists failed:", e?.message||e); }
 }
 
 /* ───────────────── Shadow host + watchdog ───────────────── */
@@ -134,10 +168,151 @@ function injectThemeCss(retry = 0) {
 }
 
 
+// ─────────────── Minimize support (non-invasive) ───────────────
+const ZT_MIN_KEY = 'ZT_MINIMIZED';
+function isMinimized(){ try{ return localStorage.getItem(ZT_MIN_KEY)==='1'; }catch{ return false; } }
+function setMinimized(v){ try{ localStorage.setItem(ZT_MIN_KEY, v?'1':'0'); }catch{} }
+
+function ensureMini(){
+  try{
+    ensureHost();
+    const wrap = ztShadow?.getElementById('zt-wrap');
+    if(!wrap) return null;
+    let mini = wrap.querySelector('#zt-mini');
+    if(!mini){
+      mini = document.createElement('div');
+      mini.id = 'zt-mini';
+      mini.style.cssText = 'position:fixed;right:18px;top:50%;transform:translateY(-50%);background:#0b0d12;color:#e6ebff;border:1px solid #1b2030;border-radius:16px;box-shadow:0 12px 44px rgba(0,0,0,.45);padding:8px 10px;z-index:2147483647;font:12px/1.2 Inter,system-ui;display:none;pointer-events:auto;cursor:pointer;width:max-content;text-align:center;left:auto;';
+      const logoUrl = chrome.runtime.getURL('assets/ZTblackbckgrn.png');
+      mini.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;gap:6px"><span class="zt-mini-wordmark" style="display:inline-block;height:14px;width:80px;max-width:100%;background-image:url(${logoUrl});background-size:contain;background-repeat:no-repeat;background-position:center"></span><span id="zt-mini-fig" style="display:block">0%</span></div>`;
+      wrap.appendChild(mini);
+      mini.addEventListener('click', ()=>{ setMinimized(false); applyMinimizedState(); });
+    }
+    // Draggable mini + stored position
+    try{ applyStoredPosition(mini, ZT_POS_MINI); makeDraggable(mini, ZT_POS_MINI); }catch{}
+    return mini;
+  }catch{ return null; }
+}
+
+// ─────────────── Drag support (panel + mini, persisted) ───────────────
+const ZT_POS_PANEL = 'ZT_POS_PANEL';
+const ZT_POS_MINI  = 'ZT_POS_MINI';
+function readPos(key){ try{ return JSON.parse(localStorage.getItem(key)||'null'); }catch{ return null; } }
+function writePos(key,pos){ try{ localStorage.setItem(key, JSON.stringify(pos)); }catch{} }
+function clamp(n,min,max){ return Math.max(min, Math.min(max, n)); }
+
+function applyStoredPosition(el, key){
+  try{
+    ensureHost();
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const w = rect.width, h = rect.height;
+    const margin = 10;
+
+    let pos = readPos(key);
+    // If no stored position yet, keep default CSS (don't override with 0,0)
+    if (!pos || typeof pos.left !== 'number' || typeof pos.top !== 'number') return;
+
+    // Clamp within viewport
+    const left = clamp(pos.left ?? 0, margin, Math.max(margin, vw - (w||200) - margin));
+    const top  = clamp(pos.top  ?? 0, margin, Math.max(margin, vh - (h||80)  - margin));
+
+    el.style.left = `${Math.round(left)}px`;
+    el.style.top  = `${Math.round(top)}px`;
+    el.style.right = 'auto';
+    el.style.bottom = 'auto';
+    // Remove translateY(-50%) used by default centering
+    if (el.style.transform) el.style.transform = 'none';
+  }catch{}
+}
+
+function makeDraggable(el, key){
+  if(!el || el.getAttribute('data-drag-attached')==='1') return;
+  el.setAttribute('data-drag-attached','1');
+  el.style.cursor = 'move';
+
+  let startX=0, startY=0, startLeft=0, startTop=0, dragging=false;
+
+  function onDown(ev){
+    try{
+      const e = (ev.touches?.[0])||ev;
+      dragging = true;
+      const rect = el.getBoundingClientRect();
+      startX = e.clientX; startY = e.clientY;
+      startLeft = rect.left; startTop = rect.top;
+      el.style.right='auto'; el.style.bottom='auto';
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+      document.addEventListener('touchmove', onMove, {passive:false});
+      document.addEventListener('touchend', onUp);
+      ev.preventDefault?.();
+    }catch{}
+  }
+  function onMove(ev){
+    if(!dragging) return;
+    const e = (ev.touches?.[0])||ev;
+    const dx = e.clientX - startX; const dy = e.clientY - startY;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const w = el.offsetWidth, h = el.offsetHeight;
+    const left = clamp(startLeft + dx, 0, vw - w);
+    const top  = clamp(startTop  + dy, 0, vh - h);
+    el.style.left = `${left}px`;
+    el.style.top  = `${top}px`;
+    ev.preventDefault?.();
+  }
+  function onUp(){
+    if(!dragging) return;
+    dragging=false;
+    const rect = el.getBoundingClientRect();
+    writePos(key, { left: Math.round(rect.left), top: Math.round(rect.top) });
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    document.removeEventListener('touchmove', onMove);
+    document.removeEventListener('touchend', onUp);
+  }
+
+  el.addEventListener('mousedown', onDown);
+  el.addEventListener('touchstart', onDown, {passive:false});
+  // İlk konumu uygula (varsa)
+  applyStoredPosition(el, key);
+}
+
+function updateMiniUI(){
+  try{
+    const wrap = ztShadow?.getElementById('zt-wrap');
+    const mini = wrap?.querySelector('#zt-mini');
+    if(!mini) return;
+    const fig = mini.querySelector('#zt-mini-fig');
+    const usedPct = Math.min(100, Math.round((approxTokens/TOKEN_LIMIT)*100));
+    if(fig){ fig.textContent = `${usedPct}%`; fig.style.color = pctColor(usedPct); }
+  }catch{}
+}
+
+function applyMinimizedState(){
+  try{
+    ensureHost();
+    const wrap = ztShadow?.getElementById('zt-wrap');
+    const panel = wrap?.querySelector('#zt-panel');
+    const mini = ensureMini();
+    const m = isMinimized();
+    if(m){
+      if(panel) panel.style.display='none';
+      if(mini) mini.style.display='block';
+      updateMiniUI();
+    } else {
+      if(panel) panel.style.display='block';
+      if(mini) mini.style.display='none';
+    }
+  }catch{}
+}
+
+
 function ensurePanelVisible() {
   try {
     ensureHost();
     injectThemeCss(); // shadow yeniden oluştuysa temayı tekrar yükle
+    // Minimized ise paneli zorla görünür yapma; mini görünümünü koru
+    if (isMinimized()) { ensureMini(); applyMinimizedState(); return; }
     const wrap = ztShadow?.getElementById('zt-wrap');
     let p = wrap?.querySelector('#zt-panel');
 
@@ -155,6 +330,8 @@ function ensurePanelVisible() {
       }
       p.style.zIndex = '2147483647';
       p.style.pointerEvents = 'auto';
+      // Draggable bağla (bir kez)
+      makeDraggable(p, ZT_POS_PANEL);
     }
   } catch (e) {
     console.warn('[ZT] ensurePanelVisible error:', e);
@@ -167,6 +344,11 @@ function readLocalCounters(){ try{ return JSON.parse(localStorage.getItem("zt_co
 function writeLocalCounters(c){ try{ localStorage.setItem("zt_counters", JSON.stringify(c)); }catch{} }
 function getLocalCount(kind){ const id=getThreadId(); const c=readLocalCounters(); return (c[id]?.[kind])||0; }
 function bumpLocalCount(kind){ const id=getThreadId(); const c=readLocalCounters(); c[id]=c[id]||{cp:0,ho:0}; c[id][kind]++; writeLocalCounters(c); }
+// Global counters (chat-independent)
+function readGlobalCounters(){ try{ return JSON.parse(localStorage.getItem('zt_global')||'{}'); }catch{ return {}; } }
+function writeGlobalCounters(c){ try{ localStorage.setItem('zt_global', JSON.stringify(c)); }catch{} }
+function getGlobalCount(kind){ const g=readGlobalCounters(); return Number(g?.[kind]||0); }
+function bumpGlobalCount(kind){ const g=readGlobalCounters(); g[kind]=Number(g?.[kind]||0)+1; writeGlobalCounters(g); }
 
 /* ───────────────── Token estimate ───────────────── */
 let approxTokens=0, lastSavedTokens=0;
@@ -176,6 +358,65 @@ function estimateTokensFromText(s){
     if (window.encode)       return window.encode(s).length;
   }catch{}
   return Math.ceil((s||"").length/4);
+}
+
+/* ───────────────── Exact token meter (flagged) ───────────────── */
+async function updateExactTokenMeter(jobMeta){
+  if(!isFlagOn("EXACT_TOKENS")) return;
+  try{
+    const wrap = ztShadow?.getElementById('zt-wrap');
+    const fig=wrap?.querySelector("#zt-token-fig");
+    const serverEst = Number(jobMeta?.token_estimate||0) || 0;
+    if (serverEst>0 && fig){ fig.textContent = `${serverEst.toLocaleString()} tokens · ${(Math.min(100, Math.round(serverEst/TOKEN_LIMIT*100)))||0}%`; }
+  }catch{}
+}
+
+/* ───────────────── Shadow Capsule (flagged, no-op by default) ───────────────── */
+async function maybeSaveShadowCapsule(rawChunks){
+  if(!isFlagOn("SHADOW_CPS")) return;
+  try{
+    const threadId=getThreadId();
+    // Prefer real user JWT if available (Verify JWT-enabled functions)
+    let accessToken=null;
+    try{ ensureSupabase(); const s=await supabase?.auth?.getSession?.(); accessToken=s?.data?.session?.access_token||null; }catch{}
+    const payload={
+      userId: currentUser?.id||null,
+      threadId,
+      approxTokens,
+      checkpointNumber: (getLocalCount("cp")||0)+1,
+      raw_chunks: rawChunks||[],
+      meta:{ ts: Date.now() }
+    };
+    trace("capsule_save_v2 →", payload);
+    const res=await fetch(EDGE_CAPSULE_SAVE,{
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        // If user JWT exists, use it; otherwise fall back to anon
+        "Authorization": `Bearer ${accessToken||SUPABASE_ANON_KEY}`,
+        "apikey": SUPABASE_ANON_KEY
+      },
+      body:JSON.stringify(payload)
+    });
+    if(!res.ok){
+      let bodyText=""; try{ bodyText=await res.text(); }catch{}
+      trace("capsule_save_v2 ←", res.status, bodyText.slice(0,300));
+    } else {
+      trace("capsule_save_v2 ←", res.status);
+    }
+  }catch(e){ trace("capsule_save_v2 error", e?.message||e); }
+}
+
+// Auto-save a shadow capsule for heavy chats (no flag needed)
+async function saveShadowCapsuleIfHeavy(rawChunks, totalTokens, threshold=20000){
+  try{
+    if(!Array.isArray(rawChunks)) return;
+    if((Number(totalTokens)||0) < threshold) return;
+    const threadId=getThreadId();
+    let accessToken=null; try{ ensureSupabase(); const s=await supabase?.auth?.getSession?.(); accessToken=s?.data?.session?.access_token||null; }catch{}
+    const payload={ userId: currentUser?.id||null, threadId, approxTokens:Number(totalTokens)||0, checkpointNumber:(getLocalCount("cp")||0)+1, raw_chunks: rawChunks||[], meta:{ ts: Date.now(), cause:"auto-heavy" } };
+    await fetch(EDGE_CAPSULE_SAVE,{ method:"POST", headers:{ "Content-Type":"application/json","Authorization":`Bearer ${accessToken||SUPABASE_ANON_KEY}`,"apikey":SUPABASE_ANON_KEY }, body:JSON.stringify(payload)}).catch(()=>{});
+  }catch{}
 }
 
 /* ───────────────── UI helpers ───────────────── */
@@ -192,18 +433,114 @@ function toast(msg){
 
 /* ───────────────── Chat capture ───────────────── */
 const UI_BLACKLIST=/^(zerotoken|checkpoint|generate|login|logout|register|auto-saved|unlimited handoffs active|first handoff|progress|token meter)/i;
-/* hız: chunk sayısını azalt */
-const MAX_CHUNK_CHARS=8000;
+/* SMART CHUNKING - Mesaj sınırlarında böl, ortadan kesme */
+const MAX_CHUNK_CHARS=10000; // Increased for better context
+const OPTIMAL_CHUNK_TOKENS=3000; // Token-based chunking
 
 function collectConversationChunks(maxChunkChars=MAX_CHUNK_CHARS){
-  const nodes=Array.from(document.querySelectorAll('[data-message-author-role] .markdown, [data-message-author-role] article, main .markdown, main article'));
-  const texts=nodes
-    .filter(n=>!n.closest('#zt-panel')&&!n.closest('#zt-handoff-modal')&&!n.closest('#zt-auth-modal'))
-    .map(n=>(n.innerText||"").split("\n").filter(line=>!UI_BLACKLIST.test(line.trim())).join("\n"))
-    .filter(Boolean);
-  const joined=texts.join("\n\n");
-  approxTokens=estimateTokensFromText(joined);
-  const chunks=[]; for(let i=0;i<joined.length;i+=maxChunkChars) chunks.push(joined.slice(i,i+maxChunkChars));
+  // Önce her mesajı ayrı ayrı topla
+  const messageNodes=Array.from(document.querySelectorAll('[data-message-author-role]'));
+  let messages=[];
+  
+  if(messageNodes.length > 0) {
+    // Her mesajı role ile birlikte sakla
+    messages = messageNodes
+      .filter(n=>!n.closest('#zt-panel')&&!n.closest('#zt-handoff-modal')&&!n.closest('#zt-auth-modal'))
+      .map(node => {
+        const role = node.getAttribute('data-message-author-role') || 'unknown';
+        const content = (node.querySelector('.markdown, article')?.innerText || node.innerText || "")
+          .split("\n")
+          .filter(line=>!UI_BLACKLIST.test(line.trim()))
+          .join("\n");
+        return { role, content };
+      })
+      .filter(m => m.content.trim());
+  } else {
+    // Fallback: Eski yöntem
+    const nodes=Array.from(document.querySelectorAll('[data-message-author-role] .markdown, [data-message-author-role] article, main .markdown, main article'));
+    let texts=nodes
+      .filter(n=>!n.closest('#zt-panel')&&!n.closest('#zt-handoff-modal')&&!n.closest('#zt-auth-modal'))
+      .map(n=>(n.innerText||"").split("\n").filter(line=>!UI_BLACKLIST.test(line.trim())).join("\n"))
+      .filter(Boolean);
+    
+    if(!texts.length){
+      try{
+        const raw=(document.body?.innerText||"")
+          .split("\n")
+          .map(l=>l.trim())
+          .filter(l=>l && !UI_BLACKLIST.test(l))
+          .join("\n");
+        const safeRaw = raw.slice(0, 200000); // Increased limit for long conversations
+        if(safeRaw.trim()) texts=[safeRaw];
+      }catch{}
+    }
+    
+    // Fallback durumunda basit chunking yap
+    const joined=texts.join("\n\n");
+    approxTokens=estimateTokensFromText(joined);
+    const chunks=[]; 
+    for(let i=0;i<joined.length;i+=maxChunkChars) {
+      chunks.push(joined.slice(i,i+maxChunkChars));
+    }
+    return chunks;
+  }
+  
+  // SMART CHUNKING: Mesaj sınırlarında böl
+  const chunks = [];
+  let currentChunk = "";
+  let currentTokens = 0;
+  
+  for(const msg of messages) {
+    const msgText = `${msg.role}: ${msg.content}\n\n`;
+    const msgTokens = estimateTokensFromText(msgText);
+    
+    // Eğer tek mesaj bile çok büyükse, onu böl
+    if(msgTokens > OPTIMAL_CHUNK_TOKENS) {
+      // Önce mevcut chunk'ı kapat
+      if(currentChunk) {
+        chunks.push(currentChunk);
+        currentChunk = "";
+        currentTokens = 0;
+      }
+      
+      // Büyük mesajı parçala
+      const words = msgText.split(' ');
+      let tempChunk = "";
+      let tempTokens = 0;
+      
+      for(const word of words) {
+        const wordTokens = estimateTokensFromText(word + " ");
+        if(tempTokens + wordTokens > OPTIMAL_CHUNK_TOKENS) {
+          chunks.push(tempChunk);
+          tempChunk = word + " ";
+          tempTokens = wordTokens;
+        } else {
+          tempChunk += word + " ";
+          tempTokens += wordTokens;
+        }
+      }
+      if(tempChunk) chunks.push(tempChunk);
+      
+    } else if(currentTokens + msgTokens > OPTIMAL_CHUNK_TOKENS) {
+      // Mevcut chunk'ı kapat, yeni chunk başlat
+      chunks.push(currentChunk);
+      currentChunk = msgText;
+      currentTokens = msgTokens;
+    } else {
+      // Mevcut chunk'a ekle
+      currentChunk += msgText;
+      currentTokens += msgTokens;
+    }
+  }
+  
+  // Son chunk'ı ekle
+  if(currentChunk) chunks.push(currentChunk);
+  
+  // Token sayısını güncelle
+  const allText = chunks.join("");
+  approxTokens = estimateTokensFromText(allText);
+  
+  console.log(`[ZT Smart Chunking] Created ${chunks.length} chunks, ~${approxTokens} tokens`);
   return chunks;
 }
 
@@ -240,7 +577,8 @@ function renderOnce(){
   if(uiMounted) return; uiMounted=true;
   const root=document.createElement("div");
   root.id="zt-panel";
-  root.style.cssText="position:fixed;right:18px;bottom:18px;width:330px;background:#0b0d12;color:#e6ebff;border:1px solid #1b2030;border-radius:16px;box-shadow:0 12px 44px rgba(0,0,0,.45);padding:14px;z-index:999998;font:13px/1.45 Inter,system-ui";
+  // Slim, tall, glassy default. Right-center docked.
+  root.style.cssText="position:fixed;right:18px;top:50%;transform:translateY(-50%);width:300px;background:rgba(0,0,0,.72);backdrop-filter:saturate(160%) blur(10px);-webkit-backdrop-filter:saturate(160%) blur(10px);color:#e6ebff;border:1px solid rgba(255,255,255,.08);border-radius:16px;box-shadow:0 12px 44px rgba(0,0,0,.45);padding:12px;z-index:999998;font:13px/1.5 Inter,system-ui";
   root.style.zIndex = '2147483647';
   root.style.pointerEvents = 'auto';
 
@@ -248,6 +586,7 @@ function renderOnce(){
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
   <div class="zt-brand"><div class="zt-wordmark"></div></div>
   <div id="zt-token-fig" style="opacity:.75">0 tokens · 0%</div>
+  <button id="zt-min-btn" title="Minimize" style="background:#1f2a44;border:0;color:#fff;width:24px;height:24px;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;margin-left:8px">–</button>
 </div>
 
     <div style="height:8px;border-radius:6px;background:#1a2234;overflow:hidden;margin-bottom:8px">
@@ -266,12 +605,19 @@ function renderOnce(){
       Auto-saved ✓ <span id="zt-saved-ago">just now</span>
     </div>
 
-    <div style="padding:10px;background:#0f1422;border:1px solid #1c2333;border-radius:10px;margin-bottom:10px">
-      <div style="font-weight:600;margin-bottom:4px">Checkpoint</div>
-      <div id="zt-cp-status" style="opacity:.9">Checking…</div>
+    <div id="zt-handoff-library" style="padding:10px;background:#0f1422;border:1px solid #1c2333;border-radius:10px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-weight:600">📚 Your Handoffs</div>
+        <button id="zt-library-toggle" style="background:none;border:none;color:#CFFF04;cursor:pointer;font-size:12px">▼</button>
+      </div>
+      <div id="zt-library-list" style="max-height:150px;overflow-y:auto;display:none">
+        <div id="zt-library-empty" style="opacity:0.6;font-size:12px;text-align:center;padding:10px">No handoffs yet</div>
+      </div>
+      <div id="zt-cp-status" style="opacity:.7;font-size:11px;margin-top:5px">Auto-save: Checking…</div>
     </div>
 
     <button id="zt-handoff-btn"><span class="label">Generate Handoff</span></button>
+    <!-- Continue button removed per user request -->
     <div id="zt-hint" style="text-align:center;font-size:12px;opacity:.8;margin-top:6px"></div>
 
     <div id="zt-progress" style="display:none;margin-top:8px">
@@ -287,26 +633,68 @@ function renderOnce(){
   // Shadow içine yerleştir ve temayı yükle
   mountIntoShadow(root);
   injectThemeCss();
+  // Mini widget'i hazırla ve state'i uygula
+  ensureMini();
+  applyMinimizedState();
 
   // Event listener'ları Shadow içinden bağla
   const wrap = ztShadow?.getElementById('zt-wrap');
   wrap?.querySelector("#zt-login-btn")?.addEventListener('click', ()=>openAuthMiniModal("login"));
   wrap?.querySelector("#zt-reg-btn")?.addEventListener('click', ()=>openAuthMiniModal("register"));
   wrap?.querySelector("#zt-handoff-btn")?.addEventListener('click', onHandoffClick);
+  wrap?.querySelector("#zt-min-btn")?.addEventListener('click', ()=>{ setMinimized(true); applyMinimizedState(); });
+  
+  // Handoff Library toggle
+  wrap?.querySelector("#zt-library-toggle")?.addEventListener('click', ()=>{
+    const list = wrap?.querySelector("#zt-library-list");
+    const toggle = wrap?.querySelector("#zt-library-toggle");
+    if(list && toggle) {
+      if(list.style.display === "none") {
+        list.style.display = "block";
+        toggle.textContent = "▲";
+        loadHandoffLibrary();
+      } else {
+        list.style.display = "none";
+        toggle.textContent = "▼";
+      }
+    }
+  });
+  // Minimize butonunu panelin sağ üstüne, logo satırı hizasına al (layout'u bozmaz)
+  try{
+    const btn=wrap?.querySelector('#zt-min-btn');
+    const panel=wrap?.querySelector('#zt-panel');
+    if(panel && btn){
+      if(getComputedStyle(panel).position==='static') panel.style.position='relative';
+      Object.assign(btn.style,{position:'absolute', top:'10px', right:'10px', marginLeft:'0'});
+    }
+  }catch{}
+  // Panel sürükleme
+  try{ const panel=wrap?.querySelector('#zt-panel'); if(panel) makeDraggable(panel, ZT_POS_PANEL); }catch{}
 }
 
 function openAuthMiniModal(mode){
   let w=document.getElementById("zt-auth-modal"); if(w) w.remove();
   w=document.createElement("div"); w.id="zt-auth-modal";
   w.style.cssText="position:fixed;inset:0;background:#0008;z-index:100000;display:flex;align-items:center;justify-content:center;";
+  const wm = chrome.runtime.getURL('assets/ZTblackbckgrn.png');
   w.innerHTML=`
-    <div style="background:#0f1115;color:#fff;border:1px solid #1b2030;border-radius:14px;padding:18px;min-width:320px">
-      <div style="font-weight:600;margin-bottom:10px">${mode==="login"?"Login":"Register"}</div>
-      <input id="zt-auth-email" placeholder="email@example.com" style="width:100%;padding:8px;border-radius:8px;border:1px solid #263150;background:#0b0d12;color:#fff;margin-bottom:8px"/>
-      <input id="zt-auth-pass"  placeholder="password" type="password" style="width:100%;padding:8px;border-radius:8px;border:1px solid #263150;background:#0b0d12;color:#fff;margin-bottom:12px"/>
-      <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button id="zt-auth-cancel" style="background:#222;border:0;color:#fff;padding:8px 10px;border-radius:8px;cursor:pointer">Cancel</button>
-        <button id="zt-auth-ok" style="background:#6a5cff;border:0;color:#fff;padding:8px 12px;border-radius:8px;cursor:pointer">${mode==="login"?"Login":"Create"}</button>
+    <div style="background:#0b0d12;color:#e6ebff;border:1px solid #1b2030;border-radius:16px;padding:18px;min-width:340px;box-shadow:0 20px 60px rgba(0,0,0,.5);font:13px/1.5 Inter,system-ui;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;position:relative">
+        <span style="display:inline-block;height:20px;width:110px;background:url(${wm}) no-repeat left center / contain"></span>
+        <span style="opacity:.8;font-weight:600">${mode==="login"?"Login":"Create account"}</span>
+      </div>
+      <input id="zt-auth-email" placeholder="email@example.com" style="width:100%;padding:10px;border-radius:10px;border:1px solid #263150;background:#0f1422;color:#fff;margin-bottom:8px"/>
+      <input id="zt-auth-pass"  placeholder="password" type="password" style="width:100%;padding:10px;border-radius:10px;border:1px solid #263150;background:#0f1422;color:#fff;margin-bottom:12px"/>
+      <div style="display:flex;gap:8px;justify-content:space-between;align-items:center">
+        <button id="zt-auth-upgrade" style="background:#263150;border:0;color:#fff;padding:10px 12px;border-radius:12px;cursor:pointer;visibility:${mode==='login'?'hidden':'visible'}">Upgrade later</button>
+        <div style="display:flex;gap:8px">
+          <button id="zt-auth-cancel" style="background:#222;border:0;color:#fff;padding:10px 12px;border-radius:12px;cursor:pointer">Cancel</button>
+          <button id="zt-auth-ok" style="background:#c1ff72;border:0;color:#000;padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:800">${mode==="login"?"Login":"Create"}</button>
+        </div>
+      </div>
+      <div style="text-align:center;margin-top:10px;opacity:.85;font-size:12px">
+        <span class="zt-mini-wordmark" style="display:inline-block;height:14px;width:72px;vertical-align:middle;background:url(${wm}) no-repeat left center / contain;margin-right:6px"></span>
+        ${mode==="login"?"Welcome back":"Create your account"} · <b>Free</b> plan includes <b>3 handoffs</b>. Upgrade anytime for unlimited.
       </div>
     </div>`;
   document.body.appendChild(w);
@@ -337,6 +725,7 @@ function openAuthMiniModal(mode){
         const {error}=await supabase.auth.signUp({email,password});
         if(error) throw error;
       }
+      await ensureUserProfileExists('free');
       await refreshSessionAndProfile(); updateAccountChip(); updateCheckpointStatusUI();
       toast(mode==="login"?"Logged in ✓":"Registered ✓ Check email if required"); w.remove();
     }catch(e){ alert(e?.message||String(e)); }
@@ -354,8 +743,10 @@ function updateAccountChip(){
     wrap.querySelector("#zt-logout-btn").onclick=async()=>{
       ensureSupabase();
       if(supabase) await supabase.auth.signOut().catch(()=>{});
-      currentUser=null; userProfile=null; updateAccountChip(); updateCheckpointStatusUI(); toast("Logged out");
+      currentUser=null; userProfile=null; updateAccountChip(); updateCheckpointStatusUI(); loadHandoffLibrary(); toast("Logged out");
     };
+    // Refresh per-user handoffs after login
+    setTimeout(()=>{ loadHandoffLibrary(); }, 50);
   }else{
     chip.textContent="Guest mode";
     actions.innerHTML=`
@@ -374,29 +765,200 @@ function updateDynamicUI(){
   const hint=wrap?.querySelector("#zt-hint");
   if(fig) fig.textContent=`${(approxTokens||0).toLocaleString()} tokens · ${usedPct}%`;
   if(bar){ bar.style.width=`${usedPct}%`; bar.style.background=pctColor(usedPct); }
-  const plan=(userProfile?.plan||"free");
-  if(hint){ hint.textContent=plan==="vault"?"ZeroToken Pro active · unlimited handoffs":"🎁 First handoff is full ZeroToken Pro experience"; }
+  const plan=(userProfile?.plan||"free").toLowerCase();
+  if(hint){
+    if(plan==="vault"){
+      hint.textContent = "ZeroToken Pro active · unlimited handoffs";
+    } else {
+      const used = Number(userProfile?.handoff_used ?? getGlobalCount('ho') ?? 0);
+      const remaining = Math.max(0, 3 - used);
+      hint.textContent = `Free plan · ${remaining}/3 handoffs remaining — Upgrade for unlimited`;
+    }
+  }
 }
 
 async function updateCheckpointStatusUI(){
   const wrap = ztShadow?.getElementById('zt-wrap');
   const el=wrap?.querySelector("#zt-cp-status"); if(!el) return;
-  if(!currentUser){ el.textContent=`Used: ${getLocalCount("cp")}/3 (local)`; return; }
-  const used=userProfile?.checkpoint_used ?? 0;
-  el.textContent=(userProfile?.plan||"free")==="vault"?"Auto-save: Unlimited":`Used: ${used}/3`;
+  if(!currentUser){ el.textContent=`Please login to use handoffs`; return; }
+  const plan=(userProfile?.plan||"free").toLowerCase();
+  if(plan==="vault"){ el.textContent = "Unlimited Handoffs · Pro Account"; return; }
+  const used = Number(userProfile?.handoff_used ?? getGlobalCount('ho') ?? 0);
+  el.textContent=`Used: ${Math.min(3,used)}/3`;
+}
+
+/* ───────────────── Quantum Enhancement Functions ───────────────── */
+async function enhanceWithWowMoments(handoffText, jobId) {
+  try {
+    const wowMoments = computeWowMoments(handoffText);
+    const existingModal = document.getElementById("zt-handoff-modal");
+    if(existingModal){
+      const holder = existingModal.querySelector('#zt-wow-holder');
+      if(holder){
+        if(wowMoments.length){
+          const list = wowMoments.map(x=>`<li>${escapeHtml(String(x))}</li>`).join('');
+          holder.innerHTML = `<h3 style=\"margin:18px 0 8px\">✨ WOW Moments</h3><ul style=\"margin:0 0 12px 16px\">${list}</ul>`;
+        } else {
+          if(holder.querySelector('[data-loading="1"]')){
+            holder.innerHTML = '';
+          }
+        }
+      }
+    }
+    // Persist (per-user)
+    try {
+      const key = getLibraryKey();
+      const library = JSON.parse(localStorage.getItem(key) || '[]');
+      const idx = library.findIndex(h => h.jobId === jobId);
+      if(idx>=0){ library[idx].wowMoments = wowMoments; localStorage.setItem(key, JSON.stringify(library)); }
+    } catch {}
+  } catch(e) { console.log('[ZT] WOW enrichment silent'); }
+}
+
+/* ───────────────── Handoff Library (per-user) ───────────────── */
+function getLibraryKey(){
+  const uid = (currentUser?.id)||'anon';
+  return `zt_handoff_library::${uid}`;
+}
+
+function saveHandoffToLibrary(handoff) {
+  try {
+    const key = getLibraryKey();
+    const library = JSON.parse(localStorage.getItem(key) || '[]');
+    const newItem = {
+      type: 'handoff',
+      id: Date.now().toString(),
+      userId: currentUser?.id || 'anon',
+      jobId: handoff.jobId,
+      title: handoff.title,
+      result: handoff.result,
+      meta: handoff.meta,
+      plan: handoff.plan,
+      createdAt: new Date().toISOString(),
+      threadId: getThreadId()
+    };
+    library.unshift(newItem);
+    if(library.length > 200) library.length = 200; // reasonable cap
+    localStorage.setItem(key, JSON.stringify(library));
+    loadHandoffLibrary();
+  } catch(e) {
+    console.error('[ZT] Failed to save handoff to library:', e);
+  }
+}
+
+// Helper function - moved up to be available for loadHandoffLibrary
+function escapeHtml(s){ 
+  return s?.replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))??""; 
+}
+
+function loadHandoffLibrary() {
+  try {
+    const wrap = ztShadow?.getElementById('zt-wrap');
+    const list = wrap?.querySelector("#zt-library-list");
+    if(!list) return;
+
+    // Guest mode: do not show any handoffs
+    if(!currentUser){
+      list.innerHTML = '<div style="opacity:0.6;font-size:12px;text-align:center;padding:10px">Please login to view your handoffs</div>';
+      return;
+    }
+
+    const key = getLibraryKey();
+
+    async function tryFetchFromSupabase(){
+      try{
+        ensureSupabase(); if(!supabase) return null;
+        const { data, error } = await supabase
+          .from('jobs')
+          .select('id,title,created_at,result,model,token_estimate,checkpoint_count')
+          .eq('user_id', currentUser.id)
+          .not('result','is', null)
+          .order('created_at', { ascending: false })
+          .limit(50);
+        if(error) return null;
+        const mapped = (data||[]).map(r=>({
+          type:'handoff',
+          id: r.id,
+          userId: currentUser.id,
+          jobId: r.id,
+          title: r.title||'Handoff',
+          result: r.result||'',
+          meta: { createdAt: new Date(r.created_at).toLocaleString('en-GB',{hour12:false}), model: r.model||'Unknown', tokens: r.token_estimate||undefined, checkpoints: r.checkpoint_count||undefined },
+          plan: (userProfile?.plan||'free').toLowerCase(),
+          createdAt: r.created_at,
+          threadId: getThreadId()
+        }));
+        // Cache for offline
+        try{ localStorage.setItem(key, JSON.stringify(mapped)); }catch{}
+        return mapped;
+      }catch{ return null; }
+    }
+
+    (async ()=>{
+      let library = await tryFetchFromSupabase();
+      if(!library || !Array.isArray(library)){
+        // Fallback to local per-user cache (may be empty)
+        library = JSON.parse(localStorage.getItem(key) || '[]');
+        // One-time migration from old global key
+        try{
+          const old = JSON.parse(localStorage.getItem('zt_handoff_library')||'[]');
+          if((!Array.isArray(library) || library.length===0) && Array.isArray(old) && old.length){
+            const uid = currentUser?.id || 'anon';
+            const migrated = old.filter(it=> (it?.userId||'anon')===uid);
+            if(migrated.length){
+              localStorage.setItem(key, JSON.stringify(migrated));
+              library = migrated;
+            }
+          }
+        }catch{}
+      }
+
+      if(!Array.isArray(library) || library.length === 0) {
+        list.innerHTML = '<div style="opacity:0.6;font-size:12px;text-align:center;padding:10px">No handoffs yet</div>';
+        return;
+      }
+
+      list.innerHTML = library.map(item => `
+        <div class="zt-library-item" data-id="${item.id}" style="padding:8px;border-bottom:1px solid #1c2333;cursor:pointer;transition:background 0.2s">
+          <div style="font-weight:500;font-size:12px;margin-bottom:2px">${escapeHtml(item.title || 'Untitled')}</div>
+          <div style="opacity:0.6;font-size:10px">${new Date(item.createdAt||Date.now()).toLocaleString()}</div>
+        </div>
+      `).join('');
+
+      list.querySelectorAll('.zt-library-item').forEach(item => {
+        item.addEventListener('click', () => {
+          const id = item.getAttribute('data-id');
+          const handoff = library.find(h => String(h.id) === String(id));
+          if(handoff) { openHandoffModal(handoff); }
+        });
+        item.addEventListener('mouseenter', () => { item.style.background = '#1a1f2e'; });
+        item.addEventListener('mouseleave', () => { item.style.background = 'transparent'; });
+      });
+    })();
+  } catch(e) {
+    console.error('[ZT] Failed to load handoff library:', e);
+  }
 }
 
 /* ───────────────── Premium Modal ───────────────── */
 function openHandoffModal({jobId,title,result,meta,plan}){
+  // Save to library
+  // Pre-compute WOW moments so they render immediately
+  const wowMomentsInitial = computeWowMoments(result);
+  saveHandoffToLibrary({jobId,title,result,meta,plan});
   let overlay=document.getElementById("zt-handoff-modal"); if(overlay) overlay.remove();
   overlay=document.createElement("div"); overlay.id="zt-handoff-modal";
-  overlay.style.cssText="position:fixed;inset:0;background:rgba(17,17,17,.6);backdrop-filter:blur(2px);z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:22px;";
-  const modal=document.createElement("div"); modal.style.cssText="width:min(920px,92vw);max-height:86vh;overflow:auto;background:#0b0c10;color:#e8e8e8;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.5);font:14px/1.6 Inter,system-ui;";
-  const header=document.createElement("div"); header.style.cssText="position:sticky;top:0;background:#0b0c10;border-bottom:1px solid #1f2229;padding:14px 16px;display:flex;justify-content:space-between;gap:12px;align-items:center;";
+  overlay.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(6px);z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:22px;";
+  const modal=document.createElement("div"); modal.style.cssText="width:min(920px,92vw);max-height:86vh;overflow:auto;background:#0b0c10;color:#e8e8e8;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.6);font:14px/1.6 Inter,system-ui;border:1px solid rgba(193,255,114,.22)";
+  const header=document.createElement("div"); header.style.cssText="position:sticky;top:0;background:#0b0c10;border-bottom:1px solid rgba(193,255,114,.22);padding:14px 16px;display:flex;justify-content:space-between;gap:12px;align-items:center;";
+  const ztLogoFull = chrome.runtime?.getURL ? chrome.runtime.getURL('assets/ZTblackbckgrn.png') : '';
   header.innerHTML=`
-    <div>
-      <div style="font-weight:700;font-size:16px">${escapeHtml(title||"Handoff Report")}</div>
-      <div style="opacity:.75;font-size:12px">${meta?.createdAt??""} · ${meta?.model??""} · tokens: ${meta?.tokens??"–"} · checkpoints: ${meta?.checkpoints??"–"}</div>
+    <div style="display:flex;align-items:center;gap:10px">
+      ${ztLogoFull?`<img src="${ztLogoFull}" alt="ZeroToken" style="height:18px;opacity:.95"/>`:''}
+      <div>
+        <div style="font-weight:700;font-size:16px">${escapeHtml(title||"Handoff Report")}</div>
+        <div style="opacity:.75;font-size:12px">${meta?.createdAt??""} · ${meta?.model??""} · tokens: ${meta?.tokens??"–"} · checkpoints: ${meta?.checkpoints??"–"}</div>
+      </div>
     </div>
     <div style="display:flex;gap:8px">
       <button data-act="copy" class="zt-btn">Copy</button>
@@ -405,13 +967,20 @@ function openHandoffModal({jobId,title,result,meta,plan}){
       <button data-act="close" class="zt-btn" style="background:#252833">Close</button>
     </div>`;
   const content=document.createElement("div"); content.style.cssText="padding:18px 16px";
-  content.innerHTML=`<div class="zt-md" id="zt-md">${escapeHtml(result).replace(/\n/g,"<br/>")}</div>`;
-  const footer=document.createElement("div"); footer.style.cssText="position:sticky;bottom:0;background:#0b0c10;border-top:1px solid #1f2229;padding:12px 16px;";
+  const wowHolderId = 'zt-wow-holder';
+  let wowSectionInitial = '';
+  if(wowMomentsInitial?.length){
+    wowSectionInitial = `<h3 style=\"margin:18px 0 8px\">✨ WOW Moments</h3><ul style=\"margin:0 0 12px 16px\">${wowMomentsInitial.map(x=>`<li>${escapeHtml(String(x))}</li>`).join('')}</ul>`;
+  } else {
+    wowSectionInitial = `<div style=\"opacity:.7;font-size:12px;margin-top:10px\" data-loading=\"1\">Detecting WOW moments…</div>`;
+  }
+  content.innerHTML=`<div class=\"zt-md\" id=\"zt-md\" data-result=\"true\">${escapeHtml(result).replace(/\n/g,"<br/>")}</div><div id=\"${wowHolderId}\" class=\"zt-wow-section\">${wowSectionInitial}</div>`;
+  const footer=document.createElement("div"); footer.style.cssText="position:sticky;bottom:0;background:#0b0c10;border-top:1px solid rgba(193,255,114,.22);padding:12px 16px;";
   footer.innerHTML=(plan==="vault")
-    ? `<div style="opacity:.7;font-size:12px">ZeroToken Pro active · unlimited handoffs</div>`
+    ? `<div style="opacity:.8;font-size:12px">ZeroToken Pro · Unlimited Handoffs</div>`
     : `<div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
          <div style="font-size:13px;opacity:.9">First handoff is full <b>ZeroToken Pro</b> experience. Want unlimited?</div>
-         <button data-act="upgrade" class="zt-btn" style="background:#7c5cff">Upgrade to ZeroToken Pro</button>
+         <button data-act="upgrade" class="zt-btn" style="background:#c1ff72;color:#000">Upgrade to ZeroToken Pro</button>
        </div>`;
   const style=document.createElement("style"); style.textContent=`
     .zt-btn{background:#323644;color:#fff;border:0;padding:8px 12px;border-radius:10px;cursor:pointer;font-weight:600}
@@ -424,16 +993,20 @@ function openHandoffModal({jobId,title,result,meta,plan}){
   overlay.appendChild(modal); document.body.appendChild(overlay);
   overlay.addEventListener("click",(e)=>{ if(e.target===overlay) close(); });
   modal.querySelector('[data-act="close"]').addEventListener("click", close);
-  modal.querySelector('[data-act="copy"]').addEventListener("click", async ()=>{ try{ await navigator.clipboard.writeText(result); toast("Copied ✓"); }catch{ fallbackCopy(result); toast("Copied (fallback) ✓"); } });
+  modal.querySelector('[data-act="copy"]').addEventListener("click", async ()=>{
+    const r = window.__zt_last_handoff_text || result;
+    try{ await navigator.clipboard.writeText(r); toast("Copied ✓"); }catch{ fallbackCopy(r); toast("Copied (fallback) ✓"); }
+  });
   modal.querySelector('[data-act="pdf"]').addEventListener("click", ()=>{
     const w=window.open("","_blank"); if(!w){ toast("Popup blocked"); return; }
+    const r = window.__zt_last_handoff_text || result;
     const html=`<html><head><title>${escapeHtml(title||"Handoff Report")}</title><style>
       body{font:14px/1.6 Inter,system-ui;margin:24px;color:#111} h2{margin:18px 0 6px;font-size:18px}
       pre{background:#f5f7fa;padding:12px;border-radius:8px;overflow:auto} code{background:#f5f7fa;padding:2px 6px;border-radius:4px}
     </style></head><body id="zt-printable">
       <h1 style="font:600 20px Inter;margin:0 0 8px">${escapeHtml(title||"Handoff Report")}</h1>
       <div style="opacity:.7;font-size:12px;margin-bottom:12px">${escapeHtml(meta?.createdAt??"")} · ${escapeHtml(meta?.model??"")} · tokens: ${escapeHtml(String(meta?.tokens??"–"))} · checkpoints: ${escapeHtml(String(meta?.checkpoints??"–"))}</div>
-      ${escapeHtml(result).replace(/\n/g,"<br/>")}
+      ${escapeHtml(r).replace(/\n/g,"<br/>")}
     </body></html>`;
     w.document.write(html); w.document.close(); w.focus(); w.print();
   });
@@ -449,7 +1022,7 @@ function openHandoffModal({jobId,title,result,meta,plan}){
   const upg=modal.querySelector('[data-act="upgrade"]'); if(upg) upg.addEventListener("click", ()=>{ window.open("https://zerotoken.ai/upgrade?plan=pro","_blank"); });
   function close(){ document.body.removeChild(overlay); }
   function fallbackCopy(text){ const ta=document.createElement("textarea"); ta.value=text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); }
-  function escapeHtml(s){ return s?.replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))??""; }
+  // escapeHtml function moved to line 875 to be available for loadHandoffLibrary
 }
 
 /* ───────────────── Tween helper ───────────────── */
@@ -465,6 +1038,14 @@ function tweenPercent(from,to,durationMs,onFrame,done){
 /* ───────────────── Start→Status (smoother) ───────────────── */
 async function onHandoffClick(){
   if(uiBusy) return; uiBusy=true;
+  // Require login before using handoff
+  if(!currentUser){ uiBusy=false; openAuthMiniModal('login'); toast('Please login to generate a handoff'); return; }
+  // Enforce quota for free plan (frontend, 3 handoffs)
+  try{
+    const plan = (userProfile?.plan||'free').toLowerCase();
+    const used = Number(userProfile?.handoff_used||0);
+    if(plan!=='vault' && used>=3){ uiBusy=false; showUpgradeModal(); return; }
+  }catch{}
   const wrap = ztShadow?.getElementById('zt-wrap');
   const btn=wrap?.querySelector("#zt-handoff-btn");
   const progress=wrap?.querySelector("#zt-progress");
@@ -483,7 +1064,7 @@ async function onHandoffClick(){
 
   // === SIMPLE WORKING PROGRESS SYSTEM ===
   const chatMessages = collectConversationChunks();
-  const totalTokens = chatMessages.reduce((sum, msg) => sum + (msg.content?.length || 0), 0);
+  const totalTokens = estimateTokensFromText((Array.isArray(chatMessages)?chatMessages.join("\n\n"):String(chatMessages||"")));
   
   // Show initial progress
   if (progBar) progBar.style.width = "5%";
@@ -565,6 +1146,9 @@ async function onHandoffClick(){
   };
   
   startHeartbeat();
+  // Shadow capsule: flag'li ve otomatik ağır sohbet kaydı
+  maybeSaveShadowCapsule(chatMessages).catch(()=>{});
+  saveShadowCapsuleIfHeavy(chatMessages, totalTokens).catch(()=>{});
   
   try{
     console.log(`[ZT] Starting handoff generation...`);
@@ -581,51 +1165,88 @@ async function onHandoffClick(){
     }
     
     const okToHandoff=await canTakeHandoff();
-    if(!okToHandoff && (userProfile?.plan||"free")!=="vault"){ 
-      alert("You used your free handoff. Upgrade to ZeroToken Pro for unlimited."); 
-      return; 
+    // Allow up to 3 handoffs for free users; fallback to global counter if RPC fails
+    const planNow = (userProfile?.plan||"free").toLowerCase();
+    const usedCount = Number(userProfile?.handoff_used??getGlobalCount('ho')??0);
+    const quotaOk = (planNow==='vault') || (usedCount < 3);
+    if(!(okToHandoff || quotaOk)){
+      showUpgradeModal();
+      return;
     }
-    console.log(`[ZT] Handoff allowed: ${okToHandoff}`);
+    console.log(`[ZT] Handoff allowed: ${okToHandoff||quotaOk}`);
 
     console.log(`[ZT] Loading conversation history...`);
-    await silentlyLoadAllHistory();
+    await silentlyLoadAllHistory(6);
     const chunks=sanitizeChunks(collectConversationChunks());
     const title=document.title||"Untitled Thread";
     console.log(`[ZT] Collected ${chunks.length} chunks, title: "${title}"`);
 
-    console.log(`[ZT] Sending request to ${EDGE_START}...`);
+    console.log(`[ZT] Sending request (prefer MRv2) ...`);
     
     // Update progress to show we're sending request
     if (progBar) progBar.style.width = "15%";
     if (progFig) progFig.textContent = "15%";
     if (progLabel) progLabel.textContent = "Sending request...";
     
-    const startRes=await fetch(EDGE_START,{ 
-      method:"POST", 
-      headers:{ 
-        "Content-Type":"application/json",
-        "Authorization":`Bearer ${SUPABASE_ANON_KEY}`,
-        "apikey":SUPABASE_ANON_KEY 
-      }, 
-      body:JSON.stringify({ 
-        userId:currentUser?.id||null, 
-        plan:(userProfile?.plan||"free").toLowerCase(), 
-        title, 
-        threadId:getThreadId(), 
-        chunks 
-      }) 
-    });
-    
-    if(!startRes.ok) {
-      const errorText = await startRes.text();
-      console.error(`[ZT] API error ${startRes.status}: ${errorText}`);
-      throw new Error(`API error ${startRes.status}: ${errorText}`);
+    // Mevcut çalışan sistemi kullan
+    let usedEndpoint = EDGE_START; 
+    let startRes;
+    const basePayload = { 
+      userId: currentUser?.id || null, 
+      plan: (userProfile?.plan || "free").toLowerCase(), 
+      title, 
+      threadId: getThreadId(), 
+      chunks 
+    };
+    const payload = basePayload;
+    try{
+      startRes = await fetch(usedEndpoint,{ method:"POST", headers:{ "Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_ANON_KEY}`,"apikey":SUPABASE_ANON_KEY }, body:JSON.stringify(payload) });
+      if(!startRes.ok){
+        const errTxt = await startRes.text().catch(()=>"");
+        // If flawless fails, fallback to old system
+        if (startRes.status === 404) {
+          console.warn("[ZT] Flawless handoff not available, falling back to continuity_v1");
+          usedEndpoint = EDGE_START;
+          startRes = await fetch(EDGE_START,{ 
+            method:"POST", 
+            headers:{ "Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_ANON_KEY}`,"apikey":SUPABASE_ANON_KEY }, 
+            body:JSON.stringify(basePayload) 
+          });
+          if(!startRes.ok) {
+            throw new Error(`Fallback also failed ${startRes.status}: ${await startRes.text()}`);
+          }
+        } else {
+          throw new Error(`Handoff error ${startRes.status}: ${errTxt}`);
+        }
+      }
+    }catch(e){
+      // If any error, try fallback to old system
+      console.error("[ZT] Primary handoff failed:", e);
+      try {
+        usedEndpoint = EDGE_START;
+        startRes = await fetch(EDGE_START,{ 
+          method:"POST", 
+          headers:{ "Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_ANON_KEY}`,"apikey":SUPABASE_ANON_KEY }, 
+          body:JSON.stringify(basePayload) 
+        });
+        if(!startRes.ok){ 
+          const errorText = await startRes.text(); 
+          throw new Error(`Fallback also failed ${startRes.status}: ${errorText}`); 
+        }
+      } catch(fallbackErr) {
+        throw new Error(`All handoff methods failed: ${fallbackErr.message}`);
+      }
     }
-    
     const responseData = await startRes.json();
     console.log(`[ZT] API response:`, responseData);
     
     const { job_id, meta } = responseData;
+    console.log(`[ZT] Received job_id: ${job_id}`);
+    if (meta?.zt_rev) console.log(`[ZT] Server revision: ${meta.zt_rev}`);
+    if (typeof meta?.primer_coverage !== 'undefined') console.log(`[ZT] primer_coverage=`, meta.primer_coverage);
+    if (typeof meta?.saliency_selected !== 'undefined') console.log(`[ZT] saliency=`, meta.saliency_selected, '/', meta.saliency_total);
+    if (typeof meta?.continuity_tokens_est !== 'undefined') console.log(`[ZT] continuity_tokens_est=`, meta.continuity_tokens_est, 'trimmed=', meta.continuity_trimmed);
+    if (typeof meta?.elapsed_ms !== 'undefined') console.log(`[ZT] FAST60 elapsed=${meta.elapsed_ms}ms tokens=${meta.tokens_in}→${meta.tokens_used} perf_violation=${meta.perf_violation}`);
     if (!job_id) {
       throw new Error("No job_id received from API");
     }
@@ -633,11 +1254,12 @@ async function onHandoffClick(){
     // === LOG REAL TOKEN COUNT ===
     const actualTokens = meta?.token_estimate || totalTokens;
     console.log(`[ZT] Job started: ${actualTokens} tokens, estimated ${estimatedMinutes}-${estimatedMinutes + 1} minutes`);
+    updateExactTokenMeter(responseData?.meta||{});
     
     // Update progress to show job started
     if (progBar) progBar.style.width = "25%";
     if (progFig) progFig.textContent = "25%";
-    if (progLabel) progLabel.textContent = "Job started, polling status...";
+    if (progLabel) progLabel.textContent = `Job started via ${usedEndpoint.includes('map_reduce_v2')?'MRv2':'legacy'}; polling...`;
     
     // Start progress animation
     console.log(`[ZT] Progress: 25% - Job started successfully`);
@@ -653,17 +1275,22 @@ async function onHandoffClick(){
       const tick=async()=>{
         try{
           console.log(`[ZT] Polling status for job ${job_id}...`);
+          // Forward user access token if logged in; server will fall back to service role
+          let accessToken=null; 
+          try{ ensureSupabase(); const s=await supabase?.auth?.getSession?.(); accessToken=s?.data?.session?.access_token||null; }catch{}
           const r=await fetch(`${EDGE_STATUS}?job=${job_id}&t=${Date.now()}`,{ 
             headers:{ 
-              "Authorization":`Bearer ${SUPABASE_ANON_KEY}`,
-              "apikey":SUPABASE_ANON_KEY 
-            } 
+              "Authorization":`Bearer ${accessToken||SUPABASE_ANON_KEY}`,
+              "apikey":SUPABASE_ANON_KEY
+            }
           });
           
-          if(!r.ok) {
-            const errorText = await r.text();
-            console.error(`[ZT] Status API error ${r.status}: ${errorText}`);
-            throw new Error(`Status API error ${r.status}: ${errorText}`);
+          if(!r || !r.ok) {
+            const errorText = r ? await r.text() : "Network error";
+            const statusCode = r ? r.status : 0;
+            console.error(`[ZT] Status API error ${statusCode}: ${errorText}`);
+            console.error(`[ZT] Status polling error:`, errorText);
+            throw new Error(`Status API error ${statusCode}: ${errorText}`);
           }
           
           const st=await r.json();
@@ -702,14 +1329,59 @@ async function onHandoffClick(){
             if(progFig) progFig.textContent = "100%";
             if(progLabel) progLabel.textContent = "Complete!";
             
-            setTimeout(()=>{
+            (async ()=>{
               const bar=ztShadow?.getElementById('zt-wrap')?.querySelector("#zt-prog-bar"); if(bar) bar.style.background="#25c277";
+              // Non-blocking finalization: open immediately, upgrade content in background
+              let fullResult = st?.result || '';
+              function updateModalContent(text){
+                const existingModal = document.getElementById("zt-handoff-modal");
+                if(!existingModal) return;
+                const resultArea = existingModal.querySelector('[data-result="true"]');
+                if(!resultArea) return;
+                const escaped = String(text||"").replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m]));
+                resultArea.innerHTML = escaped.replace(/\n/g,"<br/>");
+              }
+              try{ window.__zt_last_handoff_text = fullResult; }catch{}
               openHandoffModal({
-                jobId:job_id, title, result:st.result||"(empty)",
-                meta:{ createdAt:new Date().toLocaleString("en-GB",{hour12:false}), model:meta?.model||"Unknown", tokens:meta?.token_estimate??undefined, checkpoints:meta?.checkpoint_count??undefined },
+                jobId:job_id, title, result: fullResult || "(loading...)",
+                meta:{ createdAt:new Date().toLocaleString("en-GB",{hour12:false}), model:meta?.model||"Unknown", tokens:(meta?.token_estimate ?? totalTokens), checkpoints:(meta?.checkpoint_count ?? 0) },
                 plan:(userProfile?.plan||"free")
               });
-            },450);
+              (async ()=>{
+                // Try handoff_result with timeout; then brief DB poll as best-effort
+                try{
+                  ensureSupabase();
+                  const invokePromise = (async ()=>{
+                    if(supabase?.functions){
+                      const { data, error } = await supabase.functions.invoke('handoff_result', { body: { job: job_id } });
+                      if(error) throw new Error(error.message||'invoke failed');
+                      return data?.result||'';
+                    } else {
+                      const r = await fetch(`${SUPABASE_URL}/functions/v1/handoff_result`, { method:'POST', headers:{ "Content-Type":"application/json","Authorization":`Bearer ${SUPABASE_ANON_KEY}`, "apikey": SUPABASE_ANON_KEY }, body: JSON.stringify({ job: job_id }) });
+                      if(!r.ok) throw new Error(`handoff_result ${r.status}`);
+                      const j = await r.json();
+                      return j?.result||'';
+                    }
+                  })();
+                  const timeout = new Promise((_,rej)=> setTimeout(()=>rej(new Error('invoke timeout')), 8000));
+                  const best = await Promise.race([invokePromise, timeout]).catch(()=>"");
+                  if(best && String(best).length > fullResult.length){ fullResult = String(best); updateModalContent(fullResult); try{ window.__zt_last_handoff_text = fullResult; }catch{} }
+                }catch{}
+                try{
+                  ensureSupabase(); if(!supabase) return;
+                  for(let i=0;i<3;i++){
+                    const { data, error } = await supabase.from('jobs').select('result,stage').eq('id', job_id).single();
+                    if(!error && data?.result){
+                      const txt = String(data.result||'');
+                      if(txt.length > fullResult.length){ fullResult = txt; updateModalContent(fullResult); try{ window.__zt_last_handoff_text = fullResult; }catch{} }
+                      if(data.stage==="final") break;
+                    }
+                    await new Promise(r=> setTimeout(r, 120));
+                  }
+                  if(fullResult && fullResult.length>100) enhanceWithWowMoments(fullResult, job_id);
+                }catch{}
+              })();
+            })();
             
             resolve(true); return;
           }
@@ -723,6 +1395,8 @@ async function onHandoffClick(){
     });
 
     await markHandoff();
+    // Bump global counter for UI accuracy (free only)
+    try{ if(planNow!=='vault'){ bumpGlobalCount('ho'); } }catch{}
 
   }catch(e){
     alert("Handoff failed: "+(e?.message||e));
@@ -744,6 +1418,123 @@ async function onHandoffClick(){
 }
 
 /* ───────────────── Performance Analytics ───────────────── */
+
+// F) REAL BENCH GATE (prove ≤60s @ ≤200k)
+window.__zt_bench200k = async function(strict = false) {
+  try {
+    console.log('[ZT] Starting 200k token benchmark...');
+    
+    // Collect current conversation
+    await silentlyLoadAllHistory(6);
+    const baseChunks = sanitizeChunks(collectConversationChunks());
+    const title = document.title || "200k Benchmark Test";
+    
+    // Duplicate chunks to reach ~200k tokens
+    const targetTokens = 200000;
+    let benchChunks = [...baseChunks];
+    let currentTokens = Math.ceil(benchChunks.join('').length / 4);
+    
+    while (currentTokens < targetTokens && benchChunks.length < 500) {
+      benchChunks.push(...baseChunks.slice(0, Math.min(20, baseChunks.length)));
+      currentTokens = Math.ceil(benchChunks.join('').length / 4);
+    }
+    
+    console.log(`[ZT] Benchmark: ${benchChunks.length} chunks, ~${currentTokens} tokens`);
+    
+    const startTime = Date.now();
+    const res = await fetch(EDGE_START, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+        "apikey": SUPABASE_ANON_KEY
+      },
+      body: JSON.stringify({
+        userId: currentUser?.id || null,
+        plan: (userProfile?.plan || "free").toLowerCase(),
+        title,
+        threadId: `bench200k-${Date.now()}`,
+        chunks: benchChunks,
+        rev: "fast60_hotfix4_1"
+      })
+    });
+    
+    const elapsed = Date.now() - startTime;
+    const json = await res.json();
+    
+    if (!json.ok) {
+      console.error('[ZT] Benchmark failed:', json);
+      return;
+    }
+    
+    const meta = json.meta || {};
+    const perfViolation = (meta.elapsed_ms || elapsed) > 60000;
+    const tokensLow = (meta.tokens_in || currentTokens) < 150000;
+    const scoreLow = (meta.continuity_score || 0) < 0.90;
+    const strictFail = strict && (tokensLow || perfViolation || scoreLow);
+    
+    console.log(`[ZT] 200k BENCHMARK RESULTS (strict=${strict}):`);
+    console.log(`   elapsed_ms: ${meta.elapsed_ms || elapsed} (SLA: ≤60000)`);
+    console.log(`   tokens_in: ${meta.tokens_in || currentTokens}`);
+    console.log(`   recap_tokens: ${meta.recap_tokens || 0}`);
+    console.log(`   primer_coverage: ${meta.primer_coverage || 0}`);
+    console.log(`   action_validity: ${meta.action_validity || 0}`);
+    console.log(`   evidence_density: ${meta.evidence_density || 0}`);
+    console.log(`   continuity_score: ${meta.continuity_score || 0}`);
+    console.log(`   anchor_kept: ${meta.anchor_kept || 0}`);
+    console.log(`   selected_chunks: ${meta.selected_chunks || 0}`);
+    console.log(`   quoted_bullets: ${meta.quoted_bullets || 0}`);
+    console.log(`   trimmed: ${meta.trimmed || false}`);
+    console.log(`   perf_path: ${meta.perf_path || 'unknown'}`);
+    console.log(`   perf_violation: ${perfViolation}`);
+    console.log(`   strict_fail: ${strictFail}`);
+    
+    if (strictFail) {
+      const reasons = [];
+      if (tokensLow) reasons.push('tokens_in<150k');
+      if (perfViolation) reasons.push('elapsed>60s');
+      if (scoreLow) reasons.push('score<0.9');
+      
+      const toast = document.createElement('div');
+      toast.textContent = `Benchmark FAILED: ${reasons.join(', ')}`;
+      toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#ff4444;color:white;padding:8px 16px;border-radius:8px;z-index:999999';
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 8000);
+    } else if (strict) {
+      const toast = document.createElement('div');
+      toast.textContent = 'Strict benchmark PASSED ✓';
+      toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#25c277;color:white;padding:8px 16px;border-radius:8px;z-index:999999';
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), 3000);
+    }
+    
+    return meta;
+  } catch (e) {
+    console.error('[ZT] Benchmark error:', e);
+    return null;
+  }
+};
+
+// Injection validation function for hotfix3
+window.__zt_validate_injection = function(injection) {
+  const issues = [];
+  const banned = /As an AI|This summary|Changes Made|Data format JSON|link placeholder|marketing|fonts|brand colors|Insufficient evidence|\.\.\.|\u2026/i;
+  
+  if (banned.test(injection)) issues.push('banned_phrases');
+  if (!/- Facts:/i.test(injection)) issues.push('missing_facts_header');
+  if (!/- Decisions:/i.test(injection)) issues.push('missing_decisions_header');  
+  if (!/- Open Questions:/i.test(injection)) issues.push('missing_questions_header');
+  if (!/- Next Steps:/i.test(injection)) issues.push('missing_steps_header');
+  
+  const bulletCount = (injection.match(/•/g) || []).length;
+  if (bulletCount < 4) issues.push('insufficient_bullets');
+  
+  return { valid: issues.length === 0, issues };
+};
+
+// Helper for manual QA
+window.__zt_printLast = () => console.log(window.__zt_last_gpt_template || '(no template)');
+
 // Calculate performance metrics based on token volume and historical data
 function calculatePerformanceMetrics(tokenCount, messageCount) {
   // Base performance metrics (adjust these based on your actual logs)
@@ -800,6 +1591,7 @@ async function maybeAutoCheckpoint(){
     ensureSupabase();
     ensurePanelVisible();        // Shadow içinde paneli canlı tut
     collectConversationChunks(); updateDynamicUI(); updateCheckpointStatusUI();
+    updateMiniUI();
     maybeAutoCheckpoint().catch(()=>{});
   },1500);
 })(); })();
@@ -1364,7 +2156,7 @@ async function maybeAutoCheckpoint(){
       Object.assign(text.style,{
         position:'absolute', left:'50%', top:'50%', transform:'translate(-50%,-50%)',
         color:'#000', fontWeight:'800', fontSize:'16px', letterSpacing:'.2px', lineHeight:'1',
-        pointerEvents:'none'
+        pointerEvents:'none', visibility:'visible'
       });
       const icon = document.createElement('span');
       Object.assign(icon.style,{
@@ -2038,3 +2830,47 @@ async function maybeAutoCheckpoint(){
   if(r) new MutationObserver(()=>{ try{ sweepAll(); }catch{} })
          .observe(r,{subtree:true,childList:true,attributes:true,attributeFilter:['style','class','src']});
 })();
+
+// WOW helpers
+function computeWowMoments(handoffText){
+  try{
+    const lines = String(handoffText||"").split('\n');
+    const wow = [];
+    const patterns = [
+      /initial|başlangıç|ilk.*mesaj/i,
+      /decided|karar|seçim|onay/i,
+      /important|önemli|kritik|dikkat/i,
+      /remember|hatırla|unutma/i,
+      /preference|tercih|istek|talep/i
+    ];
+    for(const line of lines.slice(0, 120)){
+      for(const p of patterns){ if(p.test(line)){ wow.push(line.trim()); break; } }
+      if(wow.length>=6) break;
+    }
+    return wow;
+  }catch{ return []; }
+}
+
+function showUpgradeModal(){
+  let w=document.getElementById('zt-upgrade-modal'); if(w) w.remove();
+  w=document.createElement('div'); w.id='zt-upgrade-modal';
+  w.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);backdrop-filter:blur(6px);z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:22px';
+  const logo = chrome.runtime?.getURL ? chrome.runtime.getURL('assets/zticontrans.png') : '';
+  w.innerHTML=`<div style="background:#0b0c10;color:#e6ebff;border:1px solid rgba(193,255,114,.22);border-radius:16px;padding:18px;min-width:360px;box-shadow:0 20px 60px rgba(0,0,0,.6);font:13px/1.5 Inter,system-ui;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      ${logo?`<img src="${logo}" alt="ZeroToken" style="width:18px;height:18px;opacity:.95"/>`:''}
+      <b>Upgrade your ZeroToken plan</b>
+    </div>
+    <div style="opacity:.85;margin-bottom:12px">Free plan includes 3 handoffs (after registration). Choose one:</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      <button id="zt-go-lite" class="zt-btn" style="background:#c1ff72;color:#000">Lite · $2.99 / handoff</button>
+      <button id="zt-go-pro" class="zt-btn" style="background:#7c5cff">Pro · $9.99 / month (Unlimited)</button>
+    </div>
+    <div style="margin-top:12px;opacity:.7;font-size:12px">Payments handled securely. Prices excl. Stripe fees.</div>
+    <div style="text-align:right;margin-top:10px"><button id="zt-upg-close" class="zt-btn" style="background:#252833">Close</button></div>
+  </div>`;
+  document.body.appendChild(w);
+  w.querySelector('#zt-upg-close').onclick=()=>w.remove();
+  w.querySelector('#zt-go-lite').onclick=()=>{ window.open('https://zerotoken.ai/upgrade?plan=lite','_blank'); };
+  w.querySelector('#zt-go-pro').onclick=()=>{ window.open('https://zerotoken.ai/upgrade?plan=pro','_blank'); };
+}

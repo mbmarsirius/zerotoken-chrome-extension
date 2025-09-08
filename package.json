@@ -4,7 +4,7 @@
   "description": "",
   "main": "content.js",
   "scripts": {
-    "build": "esbuild bundle.js --bundle --outfile=vendor/bundle.js --allow-overwrite --loader:.wasm=dataurl"
+    "build": "esbuild bundle.js --bundle --outfile=bundle.js --allow-overwrite --loader:.wasm=dataurl && cp bundle.js vendor/bundle.js"
   },
   "keywords": [],
   "author": "",
@@ -12,7 +12,9 @@
   "type": "module",
   "dependencies": {
     "@dqbd/tiktoken": "1.0.22",
-    "@supabase/supabase-js": "2.56.1",
-    "esbuild": "0.25.9"
+    "@supabase/supabase-js": "2.56.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.9"
   }
 }

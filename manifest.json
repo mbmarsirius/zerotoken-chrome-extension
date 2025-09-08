@@ -1,16 +1,24 @@
 {
   "manifest_version": 3,
-  "name": "ZeroToken",
-  "version": "1.0.0",
-  "description": "Turn long ChatGPT threads into clean, narrative handoff reports (Copy / PDF / Email).",
+  "name": "ZeroToken – Handoff Reports",
+  "version": "1.0.1",
+  "description": "Handoff reports for ChatGPT. One‑click Copy/PDF/Email. Free 3 · Pro unlimited.",
   "icons": {
-    "16": "assets/zticontrans.png",
-    "32": "assets/zticontrans.png",
-    "48": "assets/zticontrans.png",
-    "128": "assets/zticontrans.png"
+    "16": "assets/Iconlimeback.png",
+    "32": "assets/Iconlimeback.png",
+    "48": "assets/Iconlimeback.png",
+    "128": "assets/Iconlimeback.png",
+    "256": "assets/Iconlimeback.png"
   },
   "action": {
-    "default_title": "ZeroToken"
+    "default_title": "ZeroToken – Generate Handoff",
+    "default_icon": {
+      "16": "assets/Iconlimeback.png",
+      "32": "assets/Iconlimeback.png",
+      "48": "assets/Iconlimeback.png",
+      "128": "assets/Iconlimeback.png",
+      "256": "assets/Iconlimeback.png"
+    }
   },
   "content_scripts": [
     {
